@@ -41,6 +41,18 @@ dotnet test
 dotnet run --project src/ExcelBatchTool.App
 ```
 
+## 配布用ビルド(self-contained)
+
+配布版は self-contained(.NET Desktop Runtime の別インストール不要)の
+Windows x64 構成です。
+
+```
+dotnet publish src/ExcelBatchTool.App -c Release -p:PublishProfile=win-x64-self-contained
+```
+
+出力: `src/ExcelBatchTool.App/bin/Release/net8.0-windows/win-x64/publish/`
+(この中の `ExcelBatchTool.App.exe` を起動)
+
 ## 構成
 
 ```

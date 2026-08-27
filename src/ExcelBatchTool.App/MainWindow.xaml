@@ -122,9 +122,9 @@
         <!-- メイン: ファイル一覧 + 詳細 -->
         <Grid Margin="0,12,0,0">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="7*" MinWidth="380" />
+                <ColumnDefinition Width="8*" MinWidth="440" />
                 <ColumnDefinition Width="12" />
-                <ColumnDefinition Width="9*" MinWidth="360" />
+                <ColumnDefinition Width="8*" MinWidth="360" />
             </Grid.ColumnDefinitions>
 
             <!-- ファイル一覧 -->
@@ -140,7 +140,7 @@
                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListView.View>
                             <GridView>
-                                <GridViewColumn Header="状態" Width="110">
+                                <GridViewColumn Header="状態" Width="96">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <StackPanel Orientation="Horizontal">
@@ -152,7 +152,7 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="ファイル名" Width="240">
+                                <GridViewColumn Header="ファイル名" Width="168">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <TextBlock FontSize="12" Text="{Binding FileName}"
@@ -161,7 +161,7 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="シート数" Width="70">
+                                <GridViewColumn Header="シート数" Width="60">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <TextBlock FontSize="12" Text="{Binding SheetCountDisplay}"
@@ -169,7 +169,7 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="サイズ" Width="80">
+                                <GridViewColumn Header="サイズ" Width="64">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <TextBlock FontSize="12" Text="{Binding FileSizeDisplay}"
@@ -177,7 +177,7 @@
                                         </DataTemplate>
                                     </GridViewColumn.CellTemplate>
                                 </GridViewColumn>
-                                <GridViewColumn Header="解析" Width="70">
+                                <GridViewColumn Header="解析" Width="48">
                                     <GridViewColumn.CellTemplate>
                                         <DataTemplate>
                                             <TextBlock FontSize="12" Text="{Binding StatusDisplay}" />
