@@ -13,14 +13,18 @@ public sealed class MainViewModel : ObservableObject
     private bool _isAnalyzing;
     private string _statusText = "ファイルを追加すると解析を開始します。対象ファイルは変更しません(読み取り専用)。";
 
-    public MainViewModel(Func<string[]?> pickFiles)
+    public MainViewModel(Func<string[]?> pickFiles, Func<string, string?> pickSavePath)
     {
         _pickFiles = pickFiles;
+        Merge = new MergeViewModel(pickSavePath);
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
     }
 
     public ObservableCollection<WorkbookItemViewModel> Files { get; } = [];
+
+    /// <summary>「表をまとめる」(Phase 1A)の状態。</summary>
+    public MergeViewModel Merge { get; }
 
     public RelayCommand SelectFilesCommand { get; }
 
@@ -133,6 +137,7 @@ public sealed class MainViewModel : ObservableObject
         {
             IsAnalyzing = false;
             RefreshSummary();
+            Merge.Sync(Files);
             StatusText = $"解析が完了しました({items.Count} ファイル)。対象ファイルは変更していません。";
         }
     }
@@ -151,6 +156,7 @@ public sealed class MainViewModel : ObservableObject
         Files.Clear();
         SelectedFile = null;
         RefreshSummary();
+        Merge.Sync(Files);
         StatusText = "一覧をクリアしました。";
         ClearCommand.RaiseCanExecuteChanged();
     }

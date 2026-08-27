@@ -12,7 +12,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _viewModel = new MainViewModel(PickFiles);
+        _viewModel = new MainViewModel(PickFiles, PickSavePath);
         DataContext = _viewModel;
     }
 
@@ -26,6 +26,21 @@ public partial class MainWindow : Window
         };
 
         return dialog.ShowDialog() == true ? dialog.FileNames : null;
+    }
+
+    private static string? PickSavePath(string suggestedFileName)
+    {
+        var dialog = new SaveFileDialog
+        {
+            Title = "統合ファイルの保存先",
+            Filter = "Excel ブック (*.xlsx)|*.xlsx",
+            FileName = suggestedFileName,
+            DefaultExt = ".xlsx",
+            AddExtension = true,
+            OverwritePrompt = true,
+        };
+
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
 
     private void Window_DragOver(object sender, DragEventArgs e)
