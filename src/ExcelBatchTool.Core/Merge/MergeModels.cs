@@ -65,6 +65,9 @@ public sealed class MergeSourcePlan
     /// <summary>この Sheet 単体で Block された(統合できない)。</summary>
     public bool IsBlocked { get; init; }
 
+    /// <summary>出力データ列の並び順の基準になっているシート。</summary>
+    public bool IsBase { get; init; }
+
     /// <summary>
     /// この Sheet の Header 位置(0 始まり)から、出力データ列位置(0 始まり)への対応。
     /// metadata 列は含まない。Block された Sheet では空。
@@ -85,6 +88,14 @@ public sealed class MergePreview
 
     /// <summary>先頭に追加される metadata 列の数(0〜2)。</summary>
     public int MetadataColumnCount { get; init; }
+
+    /// <summary>出力データ列の並び順の基準になったシート。解決できなかった場合は null。</summary>
+    public MergeSourceSelection? BaseSelection { get; init; }
+
+    /// <summary>「ファイル名 / シート名」形式の基準シート表示。未解決なら「未選択」。</summary>
+    public string BaseDisplay => BaseSelection is null
+        ? "未選択"
+        : $"{Path.GetFileName(BaseSelection.FilePath)} / {BaseSelection.SheetName}";
 
     public int WorkbookCount => Sources.Count;
 

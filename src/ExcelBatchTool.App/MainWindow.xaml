@@ -358,7 +358,12 @@
                                    Margin="12,10,12,2" />
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap"
                                    Text="1 ファイルにつき 1 シートを選びます。表の 1 行目を見出しとして扱います。入力ファイルは変更しません。"
-                                   FontSize="11" Foreground="#8A8F98" Margin="12,0,12,8" />
+                                   FontSize="11" Foreground="#8A8F98" Margin="12,0,12,6" />
+                        <Border DockPanel.Dock="Top" Background="#F1F5FA" BorderBrush="#C9D6E6"
+                                BorderThickness="1" CornerRadius="4" Margin="12,0,12,8" Padding="9,6">
+                            <TextBlock FontSize="11" Foreground="#3B4252" TextWrapping="Wrap"
+                                       Text="「基準」に選んだシートの見出し順で、統合結果の列を並べます。" />
+                        </Border>
 
                         <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="#E2E5EA"
                                 BorderThickness="0,1,0,0" Padding="12,10">
@@ -400,7 +405,8 @@
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="*" />
-                                                        <ColumnDefinition Width="150" />
+                                                        <ColumnDefinition Width="130" />
+                                                        <ColumnDefinition Width="Auto" />
                                                     </Grid.ColumnDefinitions>
                                                     <Grid.RowDefinitions>
                                                         <RowDefinition Height="Auto" />
@@ -413,12 +419,18 @@
                                                     <TextBlock Grid.Column="1" FontSize="12" VerticalAlignment="Center"
                                                                Text="{Binding FileName}" TextTrimming="CharacterEllipsis"
                                                                ToolTip="{Binding FilePath}" />
-                                                    <ComboBox Grid.Column="2" FontSize="12" Height="24"
+                                                    <ComboBox Grid.Column="2" FontSize="12" Height="24" Margin="6,0,0,0"
                                                               ItemsSource="{Binding SheetNames}"
                                                               SelectedItem="{Binding SelectedSheetName, Mode=TwoWay}"
                                                               IsEnabled="{Binding CanInclude}" />
+                                                    <RadioButton Grid.Column="3" Content="基準" FontSize="12"
+                                                                 GroupName="MergeBaseSheet" Margin="10,0,2,0"
+                                                                 VerticalAlignment="Center"
+                                                                 ToolTip="このシートの見出し順で統合結果の列を並べます"
+                                                                 IsChecked="{Binding IsBase, Mode=TwoWay}"
+                                                                 IsEnabled="{Binding IsSelectableAsBase}" />
 
-                                                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2"
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="3"
                                                                FontSize="11" Foreground="#C0392B" TextWrapping="Wrap"
                                                                Margin="0,4,0,0"
                                                                Text="{Binding UnavailableReason}"
@@ -478,6 +490,12 @@
                                                 <TextBlock Text="対象" Width="42" FontSize="11" Foreground="#8A8F98" />
                                                 <TextBlock FontSize="12" Foreground="#2E3440"
                                                            Text="{Binding TargetSummaryText}" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="基準" Width="42" FontSize="11" Foreground="#8A8F98" />
+                                                <TextBlock FontSize="12" Foreground="#2E3440" TextWrapping="Wrap"
+                                                           Text="{Binding PreviewBaseText}"
+                                                           ToolTip="このシートの見出し順で列を並べています" />
                                             </StackPanel>
                                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                                 <TextBlock Text="予定" Width="42" FontSize="11" Foreground="#8A8F98" />

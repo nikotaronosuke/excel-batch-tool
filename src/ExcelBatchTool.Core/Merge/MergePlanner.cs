@@ -9,8 +9,15 @@ public sealed class MergePlanner
     /// <summary>Excel のワークシート最大行数。</summary>
     private const int MaxWorksheetRows = 1_048_576;
 
+    /// <summary>
+    /// 統合前の検証結果を作る。
+    /// <paramref name="baseSelection"/> は出力データ列の並び順の基準になるシートで、
+    /// 呼び出し側が必ず明示する(「最初の選択シート」という暗黙の規則には依存しない)。
+    /// 基準が未指定・対象外・Block 済みの場合はここで Block する。
+    /// </summary>
     public MergePreview CreatePreview(
         IReadOnlyList<MergeSourceSelection> selections,
+        MergeSourceSelection? baseSelection,
         MergeOptions options,
         CancellationToken cancellationToken = default)
     {
@@ -55,15 +62,43 @@ public sealed class MergePlanner
             }
         }
 
-        // 基準は「最初に Header を読めた選択シート」。出力列順はこの Header 順を使う。
-        var baseScan = scans.FirstOrDefault(entry => !entry.Scan.IsBlocked && entry.Scan.Headers.Count > 0);
-        var dataHeaders = baseScan.Scan?.Headers ?? Array.Empty<string>();
+        // 出力データ列の並び順は、明示的に指定された基準シートの Header 順を使う。
+        var baseIndex = ResolveBaseIndex(selections, baseSelection);
+        IReadOnlyList<string> dataHeaders = Array.Empty<string>();
+
+        if (baseSelection is null)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block,
+                "基準シートが指定されていません。列の並び順の基準にするシートを 1 つ選んでください。"));
+        }
+        else if (baseIndex < 0)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block,
+                "基準シートが統合対象に含まれていません。統合対象の中から基準シートを選んでください。",
+                Path.GetFileName(baseSelection.FilePath),
+                baseSelection.SheetName));
+        }
+        else if (scans[baseIndex].Scan.IsBlocked)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block,
+                "基準シートに統合できない問題があるため、列の並び順を決められません。別のシートを基準にしてください。",
+                Path.GetFileName(baseSelection.FilePath),
+                baseSelection.SheetName));
+        }
+        else
+        {
+            dataHeaders = scans[baseIndex].Scan.Headers;
+        }
 
         var sources = new List<MergeSourcePlan>();
-        foreach (var (selection, scan) in scans)
+        for (var index = 0; index < scans.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var (selection, scan) = scans[index];
             var fileName = Path.GetFileName(selection.FilePath);
             var columnMap = Array.Empty<int>();
 
@@ -98,6 +133,7 @@ public sealed class MergePlanner
                 Headers = scan.Headers,
                 DataRowCount = scan.DataRowCount,
                 IsBlocked = scan.IsBlocked,
+                IsBase = index == baseIndex,
                 ColumnMap = columnMap,
             });
         }
@@ -134,8 +170,53 @@ public sealed class MergePlanner
             OutputHeaders = [.. metadataNames, .. dataHeaders],
             MetadataColumnCount = metadataNames.Count,
             InputDataRowCount = inputDataRowCount,
+            BaseSelection = baseIndex >= 0 ? selections[baseIndex] : null,
             Issues = issues,
         };
+    }
+
+    /// <summary>基準シートが統合対象のどれに当たるかを探す。見つからなければ -1。</summary>
+    private static int ResolveBaseIndex(
+        IReadOnlyList<MergeSourceSelection> selections,
+        MergeSourceSelection? baseSelection)
+    {
+        if (baseSelection is null)
+        {
+            return -1;
+        }
+
+        string baseFullPath;
+        try
+        {
+            baseFullPath = Path.GetFullPath(baseSelection.FilePath);
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+
+        for (var index = 0; index < selections.Count; index++)
+        {
+            var selection = selections[index];
+            if (!string.Equals(selection.SheetName, baseSelection.SheetName, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (string.Equals(Path.GetFullPath(selection.FilePath), baseFullPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return index;
+                }
+            }
+            catch (Exception)
+            {
+                // パスを解釈できない選択は基準として一致させない。
+            }
+        }
+
+        return -1;
     }
 
     internal static List<string> BuildMetadataColumnNames(MergeOptions options)

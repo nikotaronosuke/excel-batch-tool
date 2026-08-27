@@ -9,12 +9,18 @@ namespace ExcelBatchTool.App.ViewModels;
 public sealed class MergeSourceItemViewModel : ObservableObject
 {
     private readonly Action _onSelectionChanged;
+    private readonly Action<MergeSourceItemViewModel> _onBaseRequested;
     private bool _isIncluded;
+    private bool _isBase;
     private string? _selectedSheetName;
 
-    public MergeSourceItemViewModel(WorkbookItemViewModel workbook, Action onSelectionChanged)
+    public MergeSourceItemViewModel(
+        WorkbookItemViewModel workbook,
+        Action onSelectionChanged,
+        Action<MergeSourceItemViewModel> onBaseRequested)
     {
         _onSelectionChanged = onSelectionChanged;
+        _onBaseRequested = onBaseRequested;
         FilePath = workbook.FilePath;
         FileName = workbook.FileName;
 
@@ -58,7 +64,38 @@ public sealed class MergeSourceItemViewModel : ObservableObject
         {
             if (SetProperty(ref _isIncluded, value && CanInclude))
             {
+                OnPropertyChanged(nameof(IsSelectableAsBase));
                 _onSelectionChanged();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 出力データ列の並び順の基準にするシート。統合対象の中でちょうど 1 件だけ true になる。
+    /// </summary>
+    public bool IsBase
+    {
+        get => _isBase;
+        set
+        {
+            if (_isBase == value)
+            {
+                return;
+            }
+
+            if (value && !CanInclude)
+            {
+                // 統合対象にできないものは基準にしない。
+                OnPropertyChanged(nameof(IsBase));
+                return;
+            }
+
+            _isBase = value;
+            OnPropertyChanged(nameof(IsBase));
+
+            if (value)
+            {
+                _onBaseRequested(this);
             }
         }
     }
@@ -75,17 +112,35 @@ public sealed class MergeSourceItemViewModel : ObservableObject
         }
     }
 
+    /// <summary>この行を統合対象として指定できるか(基準にもできるか)。</summary>
+    public bool IsSelectableAsBase => CanInclude && IsIncluded;
+
+    /// <summary>親側から基準フラグだけを更新する(基準変更の通知は起こさない)。</summary>
+    internal void SetBaseSilently(bool value)
+    {
+        if (_isBase == value)
+        {
+            return;
+        }
+
+        _isBase = value;
+        OnPropertyChanged(nameof(IsBase));
+    }
+
     /// <summary>一覧を作り直したときに、以前の選択を引き継ぐ。</summary>
-    internal void Restore(bool isIncluded, string? sheetName)
+    internal void Restore(bool isIncluded, string? sheetName, bool isBase)
     {
         _isIncluded = isIncluded && CanInclude;
+        _isBase = isBase && CanInclude;
         if (sheetName is not null && SheetNames.Contains(sheetName))
         {
             _selectedSheetName = sheetName;
         }
 
         OnPropertyChanged(nameof(IsIncluded));
+        OnPropertyChanged(nameof(IsBase));
         OnPropertyChanged(nameof(SelectedSheetName));
+        OnPropertyChanged(nameof(IsSelectableAsBase));
     }
 }
 
@@ -216,6 +271,9 @@ public sealed class MergeViewModel : ObservableObject
         ? "-"
         : $"{_preview.WorkbookCount:N0} Workbook / {_preview.SheetCount:N0} Worksheet";
 
+    /// <summary>プレビュー作成時点の基準シート(列の並び順の基準)。</summary>
+    public string PreviewBaseText => _preview?.BaseDisplay ?? "-";
+
     public string PlannedRowsText => _preview is null
         ? "-"
         : $"{_preview.InputDataRowCount:N0} データ行 + ヘッダー 1 行"
@@ -243,17 +301,74 @@ public sealed class MergeViewModel : ObservableObject
         Sources.Clear();
         foreach (var file in files)
         {
-            var item = new MergeSourceItemViewModel(file, InvalidatePreview);
+            var item = new MergeSourceItemViewModel(file, OnSourceChanged, OnBaseRequested);
             if (previous.TryGetValue(file.FilePath, out var old))
             {
-                item.Restore(old.IsIncluded, old.SelectedSheetName);
+                item.Restore(old.IsIncluded, old.SelectedSheetName, old.IsBase);
             }
 
             Sources.Add(item);
         }
 
         OnPropertyChanged(nameof(HasSources));
+        EnsureSingleBase();
         InvalidatePreview();
+    }
+
+    /// <summary>現在の基準シート(統合対象のうち 1 件)。統合対象が 0 件なら null。</summary>
+    public MergeSourceItemViewModel? BaseSource => Sources.FirstOrDefault(source => source.IsBase);
+
+    public string BaseDisplayText => BaseSource is { SelectedSheetName: { } sheet } baseSource
+        ? $"{baseSource.FileName} / {sheet}"
+        : "未選択";
+
+    private void OnSourceChanged()
+    {
+        EnsureSingleBase();
+        InvalidatePreview();
+    }
+
+    private void OnBaseRequested(MergeSourceItemViewModel requested)
+    {
+        foreach (var source in Sources)
+        {
+            if (!ReferenceEquals(source, requested))
+            {
+                source.SetBaseSilently(false);
+            }
+        }
+
+        OnPropertyChanged(nameof(BaseSource));
+        OnPropertyChanged(nameof(BaseDisplayText));
+        InvalidatePreview();
+    }
+
+    /// <summary>
+    /// 統合対象が 1 件以上あるときは必ず 1 件だけ基準を持つ状態にする。
+    /// 基準にしていたシートが対象から外れた場合は、残った対象の先頭を基準にする。
+    /// </summary>
+    private void EnsureSingleBase()
+    {
+        var included = Sources.Where(source => source.IsIncluded).ToList();
+
+        if (included.Count == 0)
+        {
+            foreach (var source in Sources)
+            {
+                source.SetBaseSilently(false);
+            }
+        }
+        else
+        {
+            var current = included.FirstOrDefault(source => source.IsBase) ?? included[0];
+            foreach (var source in Sources)
+            {
+                source.SetBaseSilently(ReferenceEquals(source, current));
+            }
+        }
+
+        OnPropertyChanged(nameof(BaseSource));
+        OnPropertyChanged(nameof(BaseDisplayText));
     }
 
     private void InvalidatePreview()
@@ -267,7 +382,8 @@ public sealed class MergeViewModel : ObservableObject
         RaiseCommandStates();
     }
 
-    private async Task RefreshPreviewAsync()
+    /// <summary>現在の選択内容でプレビューを作り直す。</summary>
+    public async Task RefreshPreviewAsync()
     {
         var selections = BuildSelections();
         if (selections.Count == 0)
@@ -276,12 +392,14 @@ public sealed class MergeViewModel : ObservableObject
             return;
         }
 
+        var baseSelection = BuildBaseSelection();
+
         IsBusy = true;
         StatusText = "プレビューを作成しています…(入力ファイルは読み取りのみ)";
         try
         {
             var options = BuildOptions();
-            _preview = await Task.Run(() => _planner.CreatePreview(selections, options));
+            _preview = await Task.Run(() => _planner.CreatePreview(selections, baseSelection, options));
             IsPreviewStale = false;
             StatusText = _preview.CanExecute
                 ? "プレビューを確認して「統合ファイルを作成」を押してください。"
@@ -342,6 +460,12 @@ public sealed class MergeViewModel : ObservableObject
             .Where(source => source is { IsIncluded: true, SelectedSheetName: not null })
             .Select(source => new MergeSourceSelection(source.FilePath, source.SelectedSheetName!))];
 
+    private MergeSourceSelection? BuildBaseSelection()
+        => Sources.FirstOrDefault(source => source is { IsBase: true, IsIncluded: true, SelectedSheetName: not null })
+            is { } baseSource
+                ? new MergeSourceSelection(baseSource.FilePath, baseSource.SelectedSheetName!)
+                : null;
+
     private MergeOptions BuildOptions() => new()
     {
         IncludeSourceFileColumn = IncludeSourceFileColumn,
@@ -354,6 +478,7 @@ public sealed class MergeViewModel : ObservableObject
         OnPropertyChanged(nameof(HasPreview));
         OnPropertyChanged(nameof(CanCreate));
         OnPropertyChanged(nameof(TargetSummaryText));
+        OnPropertyChanged(nameof(PreviewBaseText));
         OnPropertyChanged(nameof(PlannedRowsText));
         OnPropertyChanged(nameof(IssueSummaryText));
         OnPropertyChanged(nameof(OutputHeaders));
