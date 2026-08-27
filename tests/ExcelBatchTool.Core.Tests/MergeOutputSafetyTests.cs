@@ -82,7 +82,7 @@ public sealed class MergeOutputSafetyTests
         }
 
         var preview = new MergePlanner().CreatePreview(
-            [new(first, "表"), new(second, "表"), new(third, "表")], Options);
+            [new(first, "表"), new(second, "表"), new(third, "表")], new(first, "表"), Options);
         Assert.True(preview.CanExecute);
 
         // プレビュー後・実行中に 2 番目のファイルが失われるケース。
@@ -131,7 +131,9 @@ public sealed class MergeOutputSafetyTests
         }
 
         var preview = new MergePlanner().CreatePreview(
-            [.. inputs.Select(path => new MergeSourceSelection(path, "表"))], Options);
+            [.. inputs.Select(path => new MergeSourceSelection(path, "表"))],
+            new MergeSourceSelection(inputs[0], "表"),
+            Options);
         Assert.True(preview.CanExecute);
 
         var output = dir.File("統合結果.xlsx");
@@ -147,7 +149,7 @@ public sealed class MergeOutputSafetyTests
 
     private static MergeExecutionResult Merge(string sourcePath, string outputPath)
     {
-        var preview = new MergePlanner().CreatePreview([new(sourcePath, "表")], Options);
+        var preview = new MergePlanner().CreatePreview([new(sourcePath, "表")], new(sourcePath, "表"), Options);
         return new TableMerger().Execute(preview, Options, outputPath);
     }
 

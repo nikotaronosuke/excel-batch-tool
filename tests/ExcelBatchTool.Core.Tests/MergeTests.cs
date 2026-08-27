@@ -384,7 +384,7 @@ public sealed class MergeTests
     [Fact]
     public void Preview_NoSelection_IsBlocked()
     {
-        var preview = new MergePlanner().CreatePreview([], DefaultOptions);
+        var preview = new MergePlanner().CreatePreview([], null, DefaultOptions);
 
         Assert.False(preview.CanExecute);
         Assert.Contains(preview.Blocks, issue => issue.Message.Contains("選択されていません"));
@@ -405,12 +405,20 @@ public sealed class MergeTests
 
     // --- helpers -------------------------------------------------------
 
+    /// <summary>最初の選択シートを基準にしてプレビューを作る(既定の使い方)。</summary>
     private static MergePreview CreatePreview(
         MergeOptions options,
         params (string Path, string Sheet)[] selections)
-        => new MergePlanner().CreatePreview(
-            [.. selections.Select(s => new MergeSourceSelection(s.Path, s.Sheet))],
-            options);
+        => CreatePreviewWithBase(options, baseIndex: 0, selections);
+
+    private static MergePreview CreatePreviewWithBase(
+        MergeOptions options,
+        int baseIndex,
+        params (string Path, string Sheet)[] selections)
+    {
+        var list = selections.Select(s => new MergeSourceSelection(s.Path, s.Sheet)).ToList();
+        return new MergePlanner().CreatePreview(list, list.ElementAtOrDefault(baseIndex), options);
+    }
 
     private static IReadOnlyList<string> ReadHeaders(string path)
         => WorksheetTableScanner.Scan(path, OutputSheetName, CancellationToken.None).Headers;

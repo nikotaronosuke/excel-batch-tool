@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <!-- ViewModel(基準シートの選択状態など)も検証するため WPF 参照が必要。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
@@ -17,10 +19,15 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- WPF 参照時は暗黙 using から System.IO が外れる(System.Windows.Shapes.Path との衝突回避)。
+         このプロジェクトは図形を使わないので、Shapes を外して System.IO を戻す。 -->
+    <Using Remove="System.Windows.Shapes" />
+    <Using Include="System.IO" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\ExcelBatchTool.Core\ExcelBatchTool.Core.csproj" />
+    <ProjectReference Include="..\..\src\ExcelBatchTool.App\ExcelBatchTool.App.csproj" />
   </ItemGroup>
 
 </Project>
