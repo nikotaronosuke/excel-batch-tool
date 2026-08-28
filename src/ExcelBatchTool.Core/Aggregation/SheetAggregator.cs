@@ -150,7 +150,8 @@ public sealed class SheetAggregator
                 var hyperlinks = BuildHyperlinks(worksheetPart, plan.Hyperlinks);
 
                 WriteWorksheet(
-                    worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, hyperlinks, cancellationToken);
+                    worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, hyperlinks, plan,
+                    cancellationToken);
 
                 var sheet = new Sheet
                 {
@@ -166,7 +167,7 @@ public sealed class SheetAggregator
 
                 sheets.Append(sheet);
 
-                // 印刷範囲・印刷タイトルは Workbook 側の Defined Name。
+                // 印刷範囲・印刷タイトルは Workbook 側の Defined Name(シート固有)。
                 // シート名は出力名で組み立て直し、localSheetId は出力での並び順に合わせる。
                 foreach (var printName in scan.PrintDefinedNames)
                 {
@@ -180,6 +181,7 @@ public sealed class SheetAggregator
 
                 sheetIndex++;
                 completed++;
+
                 progress?.Report(new SheetAggregationProgress(completed, preview.Sheets.Count));
             }
         }
@@ -191,6 +193,12 @@ public sealed class SheetAggregator
         var stylesPart = workbookPart.AddNewPart<WorkbookStylesPart>();
         stylesPart.Stylesheet = styles.Build();
         stylesPart.Stylesheet.Save();
+
+        // 候補一覧の名前定義(ブック全体が対象)。localSheetId は付けない。
+        foreach (var name in preview.DefinedNames)
+        {
+            definedNames.Append(new DefinedName(name.RefersTo) { Name = name.Name });
+        }
 
         // CT_Workbook では definedNames は sheets の後ろに置く。
         workbookPart.Workbook = new Workbook(sheets);
@@ -270,6 +278,7 @@ public sealed class SheetAggregator
         SheetCopyScan scan,
         uint[] styleMap,
         Hyperlinks? hyperlinks,
+        SheetAggregationPlan plan,
         CancellationToken cancellationToken)
     {
         // CT_Worksheet の子要素順にしたがって書く(順序を崩すと Open XML の検証に落ちる)。
@@ -371,7 +380,41 @@ public sealed class SheetAggregator
             writer.WriteElement(columnBreaks);
         }
 
+        // extLst は最後。元の extLst を丸ごと写さず、対応する拡張だけ組み立て直す。
+        if (BuildX14Extension(scan, plan) is { } extensionList)
+        {
+            writer.WriteElement(extensionList);
+        }
+
         writer.WriteEndElement();
+    }
+
+    /// <summary>x14 リスト入力規則の extLst を組み立てる(参照元は解決済みの値を使う)。</summary>
+    private static WorksheetExtensionList? BuildX14Extension(SheetCopyScan scan, SheetAggregationPlan plan)
+    {
+        if (plan.X14ListValidations.Count == 0)
+        {
+            return null;
+        }
+
+        var sources = scan.X14ListValidations
+            .Where(item => item.BlockReason is null && item.Element is not null)
+            .ToList();
+
+        if (sources.Count != plan.X14ListValidations.Count)
+        {
+            throw new InvalidOperationException(
+                $"{plan.SourceDisplay}: 入力規則の数がプレビューと一致しません。");
+        }
+
+        var elements = new List<DocumentFormat.OpenXml.Office2010.Excel.DataValidation>(sources.Count);
+        for (var index = 0; index < sources.Count; index++)
+        {
+            elements.Add(X14DataValidationScanner.BuildOutputElement(
+                sources[index].Element!, plan.X14ListValidations[index].ListSource));
+        }
+
+        return X14DataValidationScanner.BuildExtensionList(elements);
     }
 
     /// <summary>
@@ -653,6 +696,16 @@ public sealed class SheetAggregator
                 {
                     return validationError;
                 }
+
+                if (CheckX14ListValidations(worksheetPart, expected) is { } x14Error)
+                {
+                    return x14Error;
+                }
+            }
+
+            if (CheckOutputDefinedNames(workbookPart, preview) is { } definedNamesError)
+            {
+                return definedNamesError;
             }
 
             var validationErrors = new OpenXmlValidator().Validate(document).ToList();
@@ -744,6 +797,100 @@ public sealed class SheetAggregator
     }
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>x14 リスト入力規則が想定どおり出力され、識別子が持ち込まれていないか確かめる。</summary>
+    private static string? CheckX14ListValidations(WorksheetPart worksheetPart, SheetAggregationPlan expected)
+    {
+        var containers = worksheetPart.Worksheet?
+            .GetFirstChild<WorksheetExtensionList>()?
+            .Elements<WorksheetExtension>()
+            .SelectMany(extension =>
+                extension.Descendants<DocumentFormat.OpenXml.Office2010.Excel.DataValidations>())
+            .ToList() ?? [];
+
+        var written = containers
+            .SelectMany(container =>
+                container.Elements<DocumentFormat.OpenXml.Office2010.Excel.DataValidation>())
+            .ToList();
+
+        if (written.Count != expected.X14ListValidations.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」の新しい形式の入力規則の数が想定と異なります"
+                + $"(想定 {expected.X14ListValidations.Count} / 実際 {written.Count})。";
+        }
+
+        if (written.Count == 0)
+        {
+            return null;
+        }
+
+        if (containers.Count != 1 || containers[0].Count?.Value != (uint)written.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」の新しい形式の入力規則の件数表記が実際と一致しません。";
+        }
+
+        for (var index = 0; index < written.Count; index++)
+        {
+            var actual = written[index];
+            var wanted = expected.X14ListValidations[index];
+
+            if (!string.Equals(actual.Type?.InnerText, "list", StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の新しい形式の入力規則の種類が想定と異なります。";
+            }
+
+            if (!string.Equals(actual.ReferenceSequence?.Text, wanted.Sqref, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の新しい形式の入力規則の適用範囲が想定と異なります"
+                    + $"(想定「{wanted.Sqref}」/ 実際「{actual.ReferenceSequence?.Text}」)。";
+            }
+
+            var formula = actual.DataValidationForumla1?
+                .GetFirstChild<DocumentFormat.OpenXml.Office.Excel.Formula>()?.Text;
+
+            if (!string.Equals(formula, wanted.ListSource, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の {wanted.Sqref} のプルダウンの参照元が想定と異なります"
+                    + $"(想定「{wanted.ListSource}」/ 実際「{formula}」)。";
+            }
+
+            // 元ブックのリビジョン識別子を持ち込んでいないこと。
+            if (actual.ExtendedAttributes.Any(attribute => string.Equals(
+                attribute.NamespaceUri, X14DataValidationScanner.RevisionNamespace, StringComparison.Ordinal)))
+            {
+                return $"シート「{expected.OutputSheetName}」の入力規則に元ブックの識別子が残っています。";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>候補一覧の名前定義が、ブック全体を対象として想定どおり出力されたか確かめる。</summary>
+    private static string? CheckOutputDefinedNames(WorkbookPart workbookPart, SheetAggregationPreview preview)
+    {
+        var definedNames = workbookPart.Workbook?.DefinedNames?.Elements<DefinedName>().ToList() ?? [];
+
+        foreach (var expected in preview.DefinedNames)
+        {
+            var matches = definedNames
+                .Where(name => string.Equals(name.Name?.Value, expected.Name, StringComparison.Ordinal)
+                    && name.LocalSheetId is null)
+                .ToList();
+
+            if (matches.Count != 1)
+            {
+                return $"名前定義「{expected.Name}」が正しく出力されていません。";
+            }
+
+            if (!string.Equals(matches[0].Text, expected.RefersTo, StringComparison.Ordinal))
+            {
+                return $"名前定義「{expected.Name}」の参照先が想定と異なります"
+                    + $"(想定「{expected.RefersTo}」/ 実際「{matches[0].Text}」)。";
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>入力規則が想定どおり出力され、件数(count)も一致するか確かめる。</summary>
     private static string? CheckDataValidations(WorksheetPart worksheetPart, SheetAggregationPlan expected)

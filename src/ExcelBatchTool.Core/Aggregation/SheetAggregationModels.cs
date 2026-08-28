@@ -66,6 +66,12 @@ public sealed record DataValidationSummary(
     string? Formula1,
     string? Formula2);
 
+/// <summary>出力へ作る、ブック全体を対象とする名前定義(候補一覧の参照先)。</summary>
+public sealed record OutputDefinedName(string Name, string RefersTo);
+
+/// <summary>参照元を解決済みの x14 リスト入力規則。</summary>
+public sealed record ResolvedX14ListValidation(string Sqref, string ListSource);
+
 /// <summary>集約対象 1 件分の計画。</summary>
 public sealed class SheetAggregationPlan
 {
@@ -108,6 +114,10 @@ public sealed class SheetAggregationPlan
     public IReadOnlyList<DataValidationSummary> DataValidations { get; init; }
         = Array.Empty<DataValidationSummary>();
 
+    /// <summary>出力へ引き継ぐ x14 リスト入力規則(参照元は解決済み)。</summary>
+    public IReadOnlyList<ResolvedX14ListValidation> X14ListValidations { get; init; }
+        = Array.Empty<ResolvedX14ListValidation>();
+
     public string SourceDisplay => $"{FileName} / {SheetName}";
 }
 
@@ -117,6 +127,9 @@ public sealed class SheetAggregationPreview
     public required IReadOnlyList<SheetAggregationPlan> Sheets { get; init; }
 
     public IReadOnlyList<MergeIssue> Issues { get; init; } = Array.Empty<MergeIssue>();
+
+    /// <summary>出力ブックへ作る、ブック全体を対象とする名前定義。</summary>
+    public IReadOnlyList<OutputDefinedName> DefinedNames { get; init; } = Array.Empty<OutputDefinedName>();
 
     public int WorkbookCount => Sheets
         .Select(sheet => sheet.FilePath)

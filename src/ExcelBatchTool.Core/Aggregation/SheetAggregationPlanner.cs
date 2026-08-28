@@ -77,6 +77,9 @@ public sealed class SheetAggregationPlanner
         var usedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var sheets = new List<SheetAggregationPlan>(selections.Count);
 
+        // 候補一覧の名前定義を出力へ作るための集約(名前 → 参照先)。
+        var requiredDefinedNames = new Dictionary<string, OutputDefinedName>(StringComparer.OrdinalIgnoreCase);
+
         // ブック内リンクの参照先を解決するための「元シート → 出力シート名」表。
         var outputNameBySourceSheet = new Dictionary<(string File, string Sheet), string>();
         for (var index = 0; index < selections.Count; index++)
@@ -97,6 +100,7 @@ public sealed class SheetAggregationPlanner
             var printLayout = new PrintLayoutSummary();
             IReadOnlyList<ResolvedHyperlink> hyperlinks = Array.Empty<ResolvedHyperlink>();
             IReadOnlyList<DataValidationSummary> dataValidations = Array.Empty<DataValidationSummary>();
+            IReadOnlyList<ResolvedX14ListValidation> x14Validations = Array.Empty<ResolvedX14ListValidation>();
 
             if (!sheetBlocked)
             {
@@ -108,6 +112,11 @@ public sealed class SheetAggregationPlanner
                 hyperlinks = ResolveHyperlinks(
                     scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
                 dataValidations = SummarizeDataValidations(scan);
+                x14Validations = ResolveX14ListValidations(
+                    scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
+                CollectDefinedNames(
+                    scan, selection, outputNameBySourceSheet, fileName,
+                    requiredDefinedNames, issues, ref sheetBlocked);
 
                 foreach (var reason in scan.BlockReasons)
                 {
@@ -149,6 +158,7 @@ public sealed class SheetAggregationPlanner
                 PrintLayout = printLayout,
                 Hyperlinks = hyperlinks,
                 DataValidations = dataValidations,
+                X14ListValidations = x14Validations,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });
@@ -163,8 +173,129 @@ public sealed class SheetAggregationPlanner
                 "表示されているシートを 1 枚以上選んでください。"));
         }
 
-        return new SheetAggregationPreview { Sheets = sheets, Issues = issues };
+        return new SheetAggregationPreview
+        {
+            Sheets = sheets,
+            Issues = issues,
+            DefinedNames = [.. requiredDefinedNames.Values.OrderBy(name => name.Name, StringComparer.Ordinal)],
+        };
     }
+
+    /// <summary>x14 リスト入力規則の参照元を、出力シート名で組み立て直す。</summary>
+    private static List<ResolvedX14ListValidation> ResolveX14ListValidations(
+        SheetCopyScan scan,
+        SheetSelection selection,
+        Dictionary<(string File, string Sheet), string> outputNameBySourceSheet,
+        string fileName,
+        List<MergeIssue> issues,
+        ref bool sheetBlocked)
+    {
+        var resolved = new List<ResolvedX14ListValidation>(scan.X14ListValidations.Count);
+
+        foreach (var validation in scan.X14ListValidations)
+        {
+            if (validation.BlockReason is not null || validation.Element is null)
+            {
+                continue; // 走査側で Block 済み。
+            }
+
+            // 名前定義を経由するものは formula1 をそのまま使う(名前は出力にも作る)。
+            if (validation.DefinedName is { } definedName)
+            {
+                resolved.Add(new ResolvedX14ListValidation(validation.Sqref, definedName));
+                continue;
+            }
+
+            if (validation.TargetSheetName is not { } targetSheet)
+            {
+                // シート名なしの範囲・直接指定はそのまま。
+                resolved.Add(new ResolvedX14ListValidation(validation.Sqref, validation.Range));
+                continue;
+            }
+
+            if (!TryResolveOutputSheet(
+                outputNameBySourceSheet, selection.FilePath, targetSheet, out var outputName))
+            {
+                issues.Add(new MergeIssue(
+                    MergeIssueSeverity.Block,
+                    $"セル {validation.Sqref} の入力規則の参照先「{targetSheet}」シートが"
+                        + "集約対象に含まれていないため、プルダウンを安全に維持できません。",
+                    fileName,
+                    selection.SheetName));
+                sheetBlocked = true;
+                continue;
+            }
+
+            resolved.Add(new ResolvedX14ListValidation(
+                validation.Sqref,
+                $"{SheetReferenceSyntax.Quote(outputName!)}!{validation.Range}"));
+        }
+
+        return resolved;
+    }
+
+    /// <summary>候補一覧に使われている名前定義を、出力ブック用に集める。</summary>
+    private static void CollectDefinedNames(
+        SheetCopyScan scan,
+        SheetSelection selection,
+        Dictionary<(string File, string Sheet), string> outputNameBySourceSheet,
+        string fileName,
+        Dictionary<string, OutputDefinedName> requiredDefinedNames,
+        List<MergeIssue> issues,
+        ref bool sheetBlocked)
+    {
+        var used = scan.DataValidations
+            .Where(item => item.DefinedName is not null)
+            .Select(item => (item.Sqref, item.DefinedName!, item.TargetSheetName!, item.TargetRange!))
+            .Concat(scan.X14ListValidations
+                .Where(item => item.DefinedName is not null)
+                .Select(item => (item.Sqref, item.DefinedName!, item.TargetSheetName!, item.Range)));
+
+        foreach (var (sqref, name, targetSheet, range) in used)
+        {
+            if (!TryResolveOutputSheet(
+                outputNameBySourceSheet, selection.FilePath, targetSheet, out var outputName))
+            {
+                issues.Add(new MergeIssue(
+                    MergeIssueSeverity.Block,
+                    $"セル {sqref} の入力規則が使う名前定義「{name}」の参照先「{targetSheet}」シートが"
+                        + "集約対象に含まれていないため、プルダウンを安全に維持できません。",
+                    fileName,
+                    selection.SheetName));
+                sheetBlocked = true;
+                continue;
+            }
+
+            var refersTo = $"{SheetReferenceSyntax.Quote(outputName!)}!{range}";
+
+            if (requiredDefinedNames.TryGetValue(name, out var existing))
+            {
+                // 同名でも参照先が同じなら 1 つにまとめる。違えば安全側に倒して Block。
+                if (!string.Equals(existing.RefersTo, refersTo, StringComparison.Ordinal)
+                    || !string.Equals(existing.Name, name, StringComparison.Ordinal))
+                {
+                    issues.Add(new MergeIssue(
+                        MergeIssueSeverity.Block,
+                        $"名前定義「{name}」が複数のブックで別々の内容を指しているため、"
+                            + "現在のバージョンでは安全に集約できません。",
+                        fileName,
+                        selection.SheetName));
+                    sheetBlocked = true;
+                }
+
+                continue;
+            }
+
+            requiredDefinedNames[name] = new OutputDefinedName(name, refersTo);
+        }
+    }
+
+    private static bool TryResolveOutputSheet(
+        Dictionary<(string File, string Sheet), string> outputNameBySourceSheet,
+        string filePath,
+        string sourceSheetName,
+        out string? outputName)
+        => outputNameBySourceSheet.TryGetValue((NormalizePath(filePath), sourceSheetName), out outputName);
 
     /// <summary>
     /// ハイパーリンクを出力用に解決する。ブック内リンクは参照先シートの出力名で

@@ -66,6 +66,25 @@ internal sealed record TestDataValidation(
     string? ErrorTitle = null,
     string? Error = null);
 
+/// <summary>テスト用の x14 入力規則指定。</summary>
+internal sealed record TestX14Validation(
+    string Sqref,
+    string Formula1,
+    string Type = "list",
+    string? Formula2 = null,
+    string? Operator = null,
+    string? RevisionUid = null,
+    bool AddUnknownChild = false,
+    bool AddUnknownAttribute = false);
+
+/// <summary>テスト用のブック全体の名前定義。</summary>
+internal sealed record TestDefinedName(
+    string Name,
+    string RefersTo,
+    uint? LocalSheetId = null,
+    bool Hidden = false,
+    string? Comment = null);
+
 /// <summary>集約テスト用のシート定義。</summary>
 internal sealed class TestAggregationSheetSpec
 {
@@ -155,8 +174,14 @@ internal sealed class TestAggregationSheetSpec
     /// <summary>入力規則に想定外の拡張属性を付ける。</summary>
     public bool AddUnknownDataValidationAttribute { get; init; }
 
-    /// <summary>Office 2010 以降の拡張入力規則(x14)を extLst へ入れる。</summary>
+    /// <summary>Office 2010 以降の拡張入力規則(x14)を extLst へ入れる(他シート参照の list)。</summary>
     public bool AddX14DataValidation { get; init; }
+
+    /// <summary>個別に指定する x14 入力規則。</summary>
+    public TestX14Validation[] X14Validations { get; init; } = [];
+
+    /// <summary>入力規則以外の未対応拡張(extLst)を入れる。</summary>
+    public bool AddUnsupportedExtension { get; init; }
 
     public bool AddHyperlink { get; init; }
 
@@ -183,7 +208,8 @@ internal static class TestSheetWorkbookFactory
         IReadOnlyList<TestStyle>? styles = null,
         bool date1904 = false,
         bool addMacro = false,
-        bool addExternalLink = false)
+        bool addExternalLink = false,
+        IReadOnlyList<TestDefinedName>? definedNames = null)
     {
         using var document = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook);
         var workbookPart = document.AddWorkbookPart();
@@ -209,13 +235,35 @@ internal static class TestSheetWorkbookFactory
         }
 
         // Defined Names は sheets の後ろ。localSheetId はシートの並び順。
-        var definedNames = new DefinedNames();
+        var definedNameElements = new DefinedNames();
+
+        foreach (var name in definedNames ?? [])
+        {
+            var element = new DefinedName(name.RefersTo) { Name = name.Name };
+            if (name.LocalSheetId is { } localSheetId)
+            {
+                element.LocalSheetId = localSheetId;
+            }
+
+            if (name.Hidden)
+            {
+                element.Hidden = true;
+            }
+
+            if (name.Comment is { } comment)
+            {
+                element.Comment = comment;
+            }
+
+            definedNameElements.Append(element);
+        }
+
         for (var index = 0; index < sheets.Count; index++)
         {
             var spec = sheets[index];
             if (spec.PrintArea is { } printArea)
             {
-                definedNames.Append(new DefinedName(printArea)
+                definedNameElements.Append(new DefinedName(printArea)
                 {
                     Name = "_xlnm.Print_Area",
                     LocalSheetId = (uint)index,
@@ -224,7 +272,7 @@ internal static class TestSheetWorkbookFactory
 
             if (spec.PrintTitles is { } printTitles)
             {
-                definedNames.Append(new DefinedName(printTitles)
+                definedNameElements.Append(new DefinedName(printTitles)
                 {
                     Name = "_xlnm.Print_Titles",
                     LocalSheetId = (uint)index,
@@ -233,7 +281,7 @@ internal static class TestSheetWorkbookFactory
 
             if (spec.LocalDefinedName is { } local)
             {
-                definedNames.Append(new DefinedName(local.Reference)
+                definedNameElements.Append(new DefinedName(local.Reference)
                 {
                     Name = local.Name,
                     LocalSheetId = (uint)index,
@@ -241,9 +289,9 @@ internal static class TestSheetWorkbookFactory
             }
         }
 
-        if (definedNames.Any())
+        if (definedNameElements.Any())
         {
-            workbookPart.Workbook.AppendChild(definedNames);
+            workbookPart.Workbook.AppendChild(definedNameElements);
         }
 
         if (sharedStrings.Count > 0)
@@ -570,23 +618,48 @@ internal static class TestSheetWorkbookFactory
         }
 
 
+        var x14Specs = spec.X14Validations.ToList();
         if (spec.AddX14DataValidation)
         {
-            // Office 2010 以降の拡張入力規則。extLst の中に x14 名前空間で入る。
-            children.Add(new WorksheetExtensionList(
-                new WorksheetExtension(
-                    new DocumentFormat.OpenXml.Office2010.Excel.DataValidations(
-                        new DocumentFormat.OpenXml.Office2010.Excel.DataValidation(
-                            new DocumentFormat.OpenXml.Office2010.Excel.DataValidationForumla1(
-                                new DocumentFormat.OpenXml.Office.Excel.Formula("Sheet2!$A$1:$A$3")),
-                            new DocumentFormat.OpenXml.Office.Excel.ReferenceSequence("A1:A5"))
-                        {
-                            Type = DataValidationValues.List,
-                        })
-                    { Count = 1U })
+            x14Specs.Insert(0, new TestX14Validation("A1:A5", "Sheet2!$A$1:$A$3"));
+        }
+
+        if (x14Specs.Count > 0 || spec.AddUnsupportedExtension)
+        {
+            var extensionList = new WorksheetExtensionList();
+
+            if (x14Specs.Count > 0)
+            {
+                var container = new DocumentFormat.OpenXml.Office2010.Excel.DataValidations
+                {
+                    Count = (uint)x14Specs.Count,
+                };
+
+                foreach (var validation in x14Specs)
+                {
+                    container.Append(BuildX14Validation(validation));
+                }
+
+                var extension = new WorksheetExtension(container)
                 {
                     Uri = "{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}",
-                }));
+                };
+                extension.AddNamespaceDeclaration(
+                    "x14", "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main");
+                extensionList.Append(extension);
+            }
+
+            if (spec.AddUnsupportedExtension)
+            {
+                // 入力規則以外の拡張(例: スパークライン)。黙って落とさず Block されること。
+                var other = new WorksheetExtension { Uri = "{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" };
+                other.AddNamespaceDeclaration(
+                    "x14", "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main");
+                other.AppendChild(new DocumentFormat.OpenXml.Office2010.Excel.SparklineGroups());
+                extensionList.Append(other);
+            }
+
+            children.Add(extensionList);
         }
 
         var worksheet = new Worksheet();
@@ -727,6 +800,48 @@ internal static class TestSheetWorkbookFactory
         }
 
         workbookPart.Workbook!.Sheets!.Append(sheet);
+    }
+
+    private static DocumentFormat.OpenXml.Office2010.Excel.DataValidation BuildX14Validation(
+        TestX14Validation spec)
+    {
+        var validation = new DocumentFormat.OpenXml.Office2010.Excel.DataValidation(
+            new DocumentFormat.OpenXml.Office2010.Excel.DataValidationForumla1(
+                new DocumentFormat.OpenXml.Office.Excel.Formula(spec.Formula1)),
+            new DocumentFormat.OpenXml.Office.Excel.ReferenceSequence(spec.Sqref))
+        {
+            Type = new EnumValue<DataValidationValues> { InnerText = spec.Type },
+        };
+
+        if (spec.Formula2 is { } formula2)
+        {
+            validation.DataValidationForumla2 =
+                new DocumentFormat.OpenXml.Office2010.Excel.DataValidationForumla2(
+                    new DocumentFormat.OpenXml.Office.Excel.Formula(formula2));
+        }
+
+        if (spec.Operator is { } op)
+        {
+            validation.Operator = new EnumValue<DataValidationOperatorValues> { InnerText = op };
+        }
+
+        if (spec.RevisionUid is { } uid)
+        {
+            validation.SetAttribute(new OpenXmlAttribute(
+                "xr", "uid", "http://schemas.microsoft.com/office/spreadsheetml/2014/revision", uid));
+        }
+
+        if (spec.AddUnknownAttribute)
+        {
+            validation.SetAttribute(new OpenXmlAttribute("ebt", "unknown", "urn:fictional:test", "1"));
+        }
+
+        if (spec.AddUnknownChild)
+        {
+            validation.AppendChild(new DocumentFormat.OpenXml.Office2010.Excel.SparklineGroups());
+        }
+
+        return validation;
     }
 
     private static DataValidation BuildDataValidation(TestDataValidation spec, bool addUnknownAttribute)
