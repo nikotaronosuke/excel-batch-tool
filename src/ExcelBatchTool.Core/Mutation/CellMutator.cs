@@ -96,9 +96,35 @@ public sealed class CellMutator
         };
     }
 
-    /// <summary>元ファイルと出力先が、プレビュー時と同じ状態か確かめる。</summary>
+    /// <summary>元ファイル・データ元・出力先が、プレビュー時と同じ状態か確かめる。</summary>
     private static string? Preflight(CellMutationPreview preview)
     {
+        // 転記の場合、データ元が変わっていたら値そのものが変わってしまう。
+        if (preview.DataSourceCheck is { } dataSource)
+        {
+            if (!File.Exists(dataSource.FilePath))
+            {
+                return $"データ元の「{dataSource.FileName}」が見つかりません。"
+                    + "もう一度プレビューを更新してください。";
+            }
+
+            SourceSnapshot current;
+            try
+            {
+                current = MutationSnapshot.Take(dataSource.FilePath);
+            }
+            catch (Exception ex)
+            {
+                return $"データ元の「{dataSource.FileName}」を読み取れません: {ex.Message}";
+            }
+
+            if (current != dataSource.Snapshot)
+            {
+                return $"データ元の「{dataSource.FileName}」がプレビュー後に変更されました。"
+                    + "安全のため、どのファイルも変更していません。もう一度プレビューを更新してください。";
+            }
+        }
+
         foreach (var file in preview.Files)
         {
             if (!File.Exists(file.FilePath))
@@ -106,17 +132,17 @@ public sealed class CellMutator
                 return $"「{file.FileName}」が見つかりません。もう一度プレビューを更新してください。";
             }
 
-            SourceSnapshot current;
+            SourceSnapshot fileSnapshot;
             try
             {
-                current = CellMutationPlanner.TakeSnapshot(file.FilePath);
+                fileSnapshot = MutationSnapshot.Take(file.FilePath);
             }
             catch (Exception ex)
             {
                 return $"「{file.FileName}」を読み取れません: {ex.Message}";
             }
 
-            if (current != file.Snapshot)
+            if (fileSnapshot != file.Snapshot)
             {
                 return $"「{file.FileName}」がプレビュー後に変更されました。"
                     + "安全のため、どのファイルも変更していません。もう一度プレビューを更新してください。";

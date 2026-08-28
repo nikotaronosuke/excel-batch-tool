@@ -19,6 +19,9 @@ internal sealed record TargetCellScan
     public MergeCellValue CurrentValue { get; init; }
 }
 
+/// <summary>照合キーとして読んだセル。</summary>
+internal sealed record KeyCellScan(string? Key, string? BlockReason);
+
 /// <summary>1 つのシートを変更できるか調べた結果。</summary>
 internal sealed record SheetMutationScan
 {
@@ -28,6 +31,9 @@ internal sealed record SheetMutationScan
     /// <summary>正規化済みセル参照 → そのセルの走査結果。</summary>
     public IReadOnlyDictionary<string, TargetCellScan> Cells { get; init; }
         = new Dictionary<string, TargetCellScan>(StringComparer.Ordinal);
+
+    /// <summary>照合キーのセル(指定された場合のみ)。</summary>
+    public KeyCellScan? KeyCell { get; init; }
 }
 
 /// <summary>1 つの Workbook を変更できるか調べた結果。</summary>
@@ -56,6 +62,7 @@ internal static class CellMutationScanner
         string filePath,
         IReadOnlyList<string> sheetNames,
         IReadOnlyList<ScanTarget> targets,
+        TargetCellAddress? keyCell,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(filePath))
@@ -90,7 +97,7 @@ internal static class CellMutationScanner
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 sheets[sheetName] = ScanSheet(
-                    workbookPart, sheetName, targets, context, numberFormats, cancellationToken);
+                    workbookPart, sheetName, targets, keyCell, context, numberFormats, cancellationToken);
             }
 
             return new WorkbookMutationScan { BlockReasons = blocks, Sheets = sheets };
@@ -185,6 +192,7 @@ internal static class CellMutationScanner
         WorkbookPart workbookPart,
         string sheetName,
         IReadOnlyList<ScanTarget> targets,
+        TargetCellAddress? keyCell,
         WorkbookReadContext context,
         NumberFormatCompatibility numberFormats,
         CancellationToken cancellationToken)
@@ -246,14 +254,17 @@ internal static class CellMutationScanner
                     var cell = (Cell)reader.LoadCurrentElement()!;
                     if (cell.CellReference?.Value is { } reference
                         && !found.ContainsKey(reference)
-                        && IsTarget(targets, reference))
+                        && (IsTarget(targets, reference) || IsKeyCell(keyCell, reference)))
                     {
                         found[reference] = cell;
                     }
                 }
                 else if (type == typeof(MergeCell))
                 {
-                    MarkCovered(((MergeCell)reader.LoadCurrentElement()!).Reference?.Value, targets, merged);
+                    // 照合キーのセルも、結合されていれば読み取り位置が曖昧になるので見る。
+                    var reference = ((MergeCell)reader.LoadCurrentElement()!).Reference?.Value;
+                    MarkCovered(reference, targets, merged);
+                    MarkCoveredCell(reference, keyCell, merged);
                 }
                 else if (type == typeof(Hyperlink))
                 {
@@ -289,10 +300,72 @@ internal static class CellMutationScanner
                 merged, hyperlinked, validated, context, numberFormats);
         }
 
-        return new SheetMutationScan { Cells = cells };
+        return new SheetMutationScan
+        {
+            Cells = cells,
+            KeyCell = keyCell is { } key
+                ? ReadKeyCell(key, found.GetValueOrDefault(key.Reference), merged, context)
+                : null,
+        };
 
         static SheetMutationScan Blocked(string reason) => new() { BlockReason = reason };
     }
+
+    /// <summary>
+    /// 照合キーのセルを読む。読むだけなので入力規則やハイパーリンクは問題にしないが、
+    /// 「表示形式から 00123 と 123 を推測しない」ため、素の文字列であることを要求する。
+    /// </summary>
+    private static KeyCellScan ReadKeyCell(
+        TargetCellAddress address,
+        Cell? cell,
+        HashSet<string> merged,
+        WorkbookReadContext context)
+    {
+        var reference = address.Reference;
+
+        if (merged.Contains(reference))
+        {
+            return Blocked($"照合キーのセル {reference} が結合セルの一部です。");
+        }
+
+        if (cell is null)
+        {
+            return Blocked($"照合キーのセル {reference} がこのシートにありません。");
+        }
+
+        if (cell.CellFormula is not null)
+        {
+            return Blocked($"照合キーのセル {reference} が数式です。計算結果は使いません。");
+        }
+
+        if (cell.CellMetaIndex is not null || cell.ValueMetaIndex is not null)
+        {
+            return Blocked($"照合キーのセル {reference} に特別なデータが紐づいています。");
+        }
+
+        if (context.ReferencesRichText(cell))
+        {
+            return Blocked($"照合キーのセル {reference} は文字ごとに書式が設定されています。");
+        }
+
+        var value = context.ReadCell(cell, out _);
+        if (value.Kind != MergeValueKind.Text)
+        {
+            return value.Kind == MergeValueKind.Blank
+                ? Blocked($"照合キーのセル {reference} が空欄です。")
+                : Blocked(
+                    $"照合キーのセル {reference} が文字列ではありません。"
+                        + "「00123」と「123」を取り違えないよう、キーは文字列のセルだけを対象にします。");
+        }
+
+        return new KeyCellScan(value.Text, null);
+
+        static KeyCellScan Blocked(string reason) => new(null, reason);
+    }
+
+    private static bool IsKeyCell(TargetCellAddress? keyCell, string cellReference)
+        => keyCell is { } key
+            && string.Equals(key.Reference, cellReference, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>対象セル 1 件の可否を、走査で集めた情報から判定する。</summary>
     private static TargetCellScan ScanTargetCell(
@@ -399,6 +472,16 @@ internal static class CellMutationScanner
             {
                 covered.Add(target.Address.Reference);
             }
+        }
+    }
+
+    /// <summary>1 つの範囲に照合キーのセルが含まれるかを記録する。</summary>
+    private static void MarkCoveredCell(
+        string? reference, TargetCellAddress? keyCell, HashSet<string> covered)
+    {
+        if (keyCell is { } key)
+        {
+            MarkCovered(reference, [new ScanTarget(key, CellWriteKind.Text)], covered);
         }
     }
 

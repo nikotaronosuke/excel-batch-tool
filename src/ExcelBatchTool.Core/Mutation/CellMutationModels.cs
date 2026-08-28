@@ -88,6 +88,9 @@ public sealed record CellMutationTargetPlan
     /// <summary>変更後の値の表示用文字列。</summary>
     public string NewValueDisplay { get; init; } = string.Empty;
 
+    /// <summary>この値をどこから持ってきたか(データ元から転記した場合のみ)。</summary>
+    public MutationProvenance? Provenance { get; init; }
+
     /// <summary>出力ファイル名(元と同じフォルダー)。</summary>
     public required string OutputFileName { get; init; }
 
@@ -120,10 +123,39 @@ public sealed record CellMutationFilePlan
 
     public required SourceSnapshot Snapshot { get; init; }
 
+    /// <summary>転記元のデータファイル(データ元から転記した場合のみ)。</summary>
+    public MutationDataSourceInfo? DataSource { get; init; }
+
     /// <summary>このファイルで実際に書き換えるシート(No-op と Block を除く)。</summary>
     public IReadOnlyList<CellMutationTargetPlan> Changes { get; init; }
         = Array.Empty<CellMutationTargetPlan>();
 }
+
+/// <summary>この値をデータ元のどこから取ったか。</summary>
+public sealed record MutationProvenance(string SourceColumn, string Key, int SourceRowNumber);
+
+/// <summary>転記に使ったデータ元の情報(控えファイルに残す)。パスは持たない。</summary>
+public sealed record MutationDataSourceInfo
+{
+    public required string FileName { get; init; }
+
+    public required string Sha256 { get; init; }
+
+    /// <summary>"xlsx" または "csv"。</summary>
+    public required string Type { get; init; }
+
+    /// <summary>.xlsx の場合の読み取り元シート。</summary>
+    public string? SheetName { get; init; }
+
+    /// <summary>項目名の行(1 始まり)。</summary>
+    public int HeaderRow { get; init; }
+
+    /// <summary>照合に使った項目名。</summary>
+    public required string KeyColumn { get; init; }
+}
+
+/// <summary>実行直前にデータ元が変わっていないか確かめるための控え。</summary>
+internal sealed record MutationDataSourceCheck(string FilePath, string FileName, SourceSnapshot Snapshot);
 
 /// <summary>実行前のプレビュー。</summary>
 public sealed class CellMutationPreview
@@ -134,6 +166,9 @@ public sealed class CellMutationPreview
     public required IReadOnlyList<CellMutationFilePlan> Files { get; init; }
 
     public IReadOnlyList<MergeIssue> Issues { get; init; } = Array.Empty<MergeIssue>();
+
+    /// <summary>実行直前に読み直して変化を確かめるデータ元(転記の場合のみ)。</summary>
+    internal MutationDataSourceCheck? DataSourceCheck { get; init; }
 
     public IEnumerable<MergeIssue> Blocks => Issues.Where(issue => issue.Severity == MergeIssueSeverity.Block);
 

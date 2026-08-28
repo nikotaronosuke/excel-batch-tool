@@ -66,6 +66,18 @@ internal sealed class NumberFormatCompatibility
             return null;
         }
 
+        return Describe(formatId, kind, cellReference);
+    }
+
+    /// <summary>
+    /// この書式の数値を、意味を変えずにそのまま読み取れるか。
+    /// 転記元(Phase 2C)で「表示 15% / 生の値 0.15」のような食い違いを避けるために使う。
+    /// </summary>
+    public bool IsPlainNumber(uint? styleIndex) => NumericFormats.Contains(ResolveFormatId(styleIndex));
+
+    private static string Describe(uint formatId, CellWriteKind kind, string cellReference)
+    {
+
         var what = kind == CellWriteKind.Number ? "数値" : "文字";
         return formatId >= FirstCustomFormatId
             ? $"{cellReference} にはユーザー設定の表示形式が設定されているため、"
