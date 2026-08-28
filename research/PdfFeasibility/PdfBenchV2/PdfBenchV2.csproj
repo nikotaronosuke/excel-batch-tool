@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase 2F-R: 第 2 スタック。Sdcb 2.x + Paddle Inference 2.x runtime に固定する。
+    Paddle 3.x runtime は旧形式モデル(日本語専用 rec / SLANet 表構造)を実行できないため、
+    「日本語専用モデルが使える成熟スタック」をこちらで実測する。製品本体からは参照しない。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>CA1416;CS0618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Sdcb.PaddleOCR" Version="2.7.0.3" />
+    <PackageReference Include="Sdcb.PaddleOCR.Models.Online" Version="2.7.0.1" />
+    <PackageReference Include="Sdcb.PaddleInference" Version="2.5.0.1" />
+    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.mkl" Version="2.6.1" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <PackageReference Include="SkiaSharp" Version="4.151.1" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.151.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 指標・GT・レイアウトは第 1 スタックと共有する(結果を比較可能にするため)。 -->
+    <Compile Include="..\PdfBench\Layouts.cs" Link="Shared\Layouts.cs" />
+    <Compile Include="..\PdfBench\TextMetrics.cs" Link="Shared\TextMetrics.cs" />
+  </ItemGroup>
+
+</Project>
