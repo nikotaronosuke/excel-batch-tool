@@ -17,14 +17,21 @@ public sealed class AggregationSheetItemViewModel : ObservableObject
     {
         _onChanged = onChanged;
         SheetName = sheet.Name;
-        IsHidden = sheet.IsHidden;
+        Visibility = sheet.Visibility;
     }
 
     public string SheetName { get; }
 
-    public bool IsHidden { get; }
+    public SheetVisibility Visibility { get; }
 
-    public string DisplayName => IsHidden ? $"{SheetName}(非表示)" : SheetName;
+    public bool IsHidden => Visibility != SheetVisibility.Visible;
+
+    public string DisplayName => Visibility switch
+    {
+        SheetVisibility.Hidden => $"{SheetName}(非表示)",
+        SheetVisibility.VeryHidden => $"{SheetName}(非常に非表示)",
+        _ => SheetName,
+    };
 
     /// <summary>利用者が出力シート名を手入力した(以後、自動提案で上書きしない)。</summary>
     public bool IsNameCustomized { get; private set; }

@@ -97,34 +97,33 @@ public static class WorkbookAnalyzer
             cancellationToken.ThrowIfCancellationRequested();
 
             var name = sheet.Name?.Value ?? "(名称不明)";
-            var isHidden = sheet.State is not null
-                && (sheet.State.Value == SheetStateValues.Hidden || sheet.State.Value == SheetStateValues.VeryHidden);
+            var visibility = ResolveVisibility(sheet.State?.Value);
             var relId = sheet.Id?.Value;
             var part = relId is null ? null : TryGetPart(workbookPart, relId);
 
             switch (part)
             {
                 case WorksheetPart worksheetPart:
-                    sheets.Add(AnalyzeWorksheet(worksheetPart, name, isHidden, findings));
+                    sheets.Add(AnalyzeWorksheet(worksheetPart, name, visibility, findings));
                     break;
 
                 case ChartsheetPart:
                     findings.Add(FindingType.Chart, name);
-                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Chartsheet, IsHidden = isHidden });
+                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Chartsheet, Visibility = visibility });
                     break;
 
                 case MacroSheetPart:
                 case InternationalMacroSheetPart:
                     findings.Add(FindingType.MacroRelated, name);
-                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.MacroSheet, IsHidden = isHidden });
+                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.MacroSheet, Visibility = visibility });
                     break;
 
                 case DialogsheetPart:
-                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Dialogsheet, IsHidden = isHidden });
+                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Dialogsheet, Visibility = visibility });
                     break;
 
                 default:
-                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Unknown, IsHidden = isHidden });
+                    sheets.Add(new SheetInfo { Name = name, Kind = SheetKind.Unknown, Visibility = visibility });
                     break;
             }
         }
@@ -200,7 +199,7 @@ public static class WorkbookAnalyzer
     private static SheetInfo AnalyzeWorksheet(
         WorksheetPart worksheetPart,
         string sheetName,
-        bool isHidden,
+        SheetVisibility visibility,
         FindingAccumulator findings)
     {
         DetectWorksheetPartFindings(worksheetPart, sheetName, findings);
@@ -308,7 +307,7 @@ public static class WorkbookAnalyzer
             findings.Add(FindingType.Hyperlink, sheetName, hyperlinkCount);
         }
 
-        return BuildSheetInfo(sheetName, isHidden, dimensionRef, maxRow, maxColumn);
+        return BuildSheetInfo(sheetName, visibility, dimensionRef, maxRow, maxColumn);
     }
 
     private static void DetectWorksheetPartFindings(
@@ -397,7 +396,7 @@ public static class WorkbookAnalyzer
 
     private static SheetInfo BuildSheetInfo(
         string sheetName,
-        bool isHidden,
+        SheetVisibility visibility,
         string? dimensionRef,
         int scannedMaxRow,
         int scannedMaxColumn)
@@ -427,7 +426,7 @@ public static class WorkbookAnalyzer
         {
             Name = sheetName,
             Kind = SheetKind.Worksheet,
-            IsHidden = isHidden,
+            Visibility = visibility,
             UsedRange = usedRange,
             EstimatedRowCount = rowCount,
             EstimatedColumnCount = columnCount,
@@ -466,6 +465,22 @@ public static class WorkbookAnalyzer
         {
             return null;
         }
+    }
+
+    /// <summary>sheet/@state を表示状態へ変換する。</summary>
+    internal static SheetVisibility ResolveVisibility(SheetStateValues? state)
+    {
+        if (state is null)
+        {
+            return SheetVisibility.Visible;
+        }
+
+        if (state.Value == SheetStateValues.VeryHidden)
+        {
+            return SheetVisibility.VeryHidden;
+        }
+
+        return state.Value == SheetStateValues.Hidden ? SheetVisibility.Hidden : SheetVisibility.Visible;
     }
 
     private static WorkbookAnalysisResult Failed(string path, string fileName, long? fileSize, string message)

@@ -152,9 +152,9 @@ public sealed class SheetAggregator
                     Name = plan.OutputSheetName,
                 };
 
-                if (plan.IsHidden)
+                if (ToSheetState(plan.Visibility) is { } state)
                 {
-                    sheet.State = SheetStateValues.Hidden;
+                    sheet.State = state;
                 }
 
                 sheets.Append(sheet);
@@ -175,6 +175,14 @@ public sealed class SheetAggregator
         workbookPart.Workbook = new Workbook(sheets);
         workbookPart.Workbook.Save();
     }
+
+    /// <summary>表示状態を sheet/@state へ変換する(Visible は属性を書かない)。</summary>
+    private static SheetStateValues? ToSheetState(SheetVisibility visibility) => visibility switch
+    {
+        SheetVisibility.Hidden => SheetStateValues.Hidden,
+        SheetVisibility.VeryHidden => SheetStateValues.VeryHidden,
+        _ => null,
+    };
 
     private static void CopyThemePart(WorkbookPart workbookPart, ThemePart sourceTheme)
     {
@@ -422,10 +430,11 @@ public sealed class SheetAggregator
                         + $"(想定「{expected.OutputSheetName}」/ 実際「{actual.Name?.Value}」)。";
                 }
 
-                var isHidden = actual.State is not null && actual.State.Value != SheetStateValues.Visible;
-                if (isHidden != expected.IsHidden)
+                var actualVisibility = WorkbookAnalyzer.ResolveVisibility(actual.State?.Value);
+                if (actualVisibility != expected.Visibility)
                 {
-                    return $"シート「{expected.OutputSheetName}」の表示状態が想定と異なります。";
+                    return $"シート「{expected.OutputSheetName}」の表示状態が想定と異なります"
+                        + $"(想定 {expected.Visibility} / 実際 {actualVisibility})。";
                 }
 
                 if (actual.Id?.Value is not { } relationshipId

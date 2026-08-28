@@ -84,17 +84,22 @@ public sealed class SheetAggregationPlanner
             var fileName = Path.GetFileName(selection.FilePath);
             var outputName = outputNames[index];
             var sheetBlocked = workbookBlocks.TryGetValue(selection.FilePath, out var reasons) && reasons.Count > 0;
-            var isHidden = false;
+            var visibility = SheetVisibility.Visible;
 
             if (!sheetBlocked)
             {
                 var scan = WorksheetCopyScanner.ScanSheet(selection.FilePath, selection.SheetName, cancellationToken);
-                isHidden = scan.IsHidden;
+                visibility = scan.Visibility;
                 sheetBlocked = scan.IsBlocked;
 
                 foreach (var reason in scan.BlockReasons)
                 {
                     issues.Add(new MergeIssue(MergeIssueSeverity.Block, reason, fileName, selection.SheetName));
+                }
+
+                foreach (var reason in scan.WarningReasons)
+                {
+                    issues.Add(new MergeIssue(MergeIssueSeverity.Warning, reason, fileName, selection.SheetName));
                 }
             }
 
@@ -123,7 +128,7 @@ public sealed class SheetAggregationPlanner
                 FileName = fileName,
                 SheetName = selection.SheetName,
                 OutputSheetName = outputName,
-                IsHidden = isHidden,
+                Visibility = visibility,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });

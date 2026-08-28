@@ -68,6 +68,19 @@ public sealed record WorkbookFinding(
     public string Description => FindingCatalog.DescriptionOf(Type);
 }
 
+/// <summary>シートの表示状態。Excel の sheet/@state に対応する。</summary>
+public enum SheetVisibility
+{
+    /// <summary>通常どおり表示される。</summary>
+    Visible = 0,
+
+    /// <summary>非表示(Excel の画面から再表示できる)。</summary>
+    Hidden = 1,
+
+    /// <summary>非常に非表示(Excel の再表示メニューには出ない)。</summary>
+    VeryHidden = 2,
+}
+
 /// <summary>シートの種類。</summary>
 public enum SheetKind
 {
@@ -86,7 +99,10 @@ public sealed record SheetInfo
     public SheetKind Kind { get; init; } = SheetKind.Worksheet;
 
     /// <summary>シートの表示状態(visible / hidden / veryHidden)。</summary>
-    public bool IsHidden { get; init; }
+    public SheetVisibility Visibility { get; init; } = SheetVisibility.Visible;
+
+    /// <summary>表示されていない(hidden または veryHidden)。</summary>
+    public bool IsHidden => Visibility != SheetVisibility.Visible;
 
     /// <summary>使用範囲(A1 形式)。取得できない場合は null。</summary>
     public string? UsedRange { get; init; }
