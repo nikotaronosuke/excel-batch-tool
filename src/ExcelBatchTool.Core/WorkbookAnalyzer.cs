@@ -13,6 +13,9 @@ namespace ExcelBatchTool.Core;
 /// </summary>
 public static class WorkbookAnalyzer
 {
+    /// <summary>Office 2010 以降の拡張要素の名前空間(入力規則などが入る)。</summary>
+    private const string X14Namespace = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
+
     /// <summary>1 つの .xlsx ファイルを解析する。</summary>
     public static WorkbookAnalysisResult Analyze(string path, CancellationToken cancellationToken = default)
     {
@@ -264,6 +267,12 @@ public static class WorkbookAnalyzer
                 }
                 else if (elementType == typeof(DataValidation))
                 {
+                    dataValidationCount++;
+                }
+                else if (reader.LocalName == "dataValidation"
+                    && string.Equals(reader.NamespaceUri, X14Namespace, StringComparison.Ordinal))
+                {
+                    // Office 2010 以降の拡張形式。標準形式と同じ「入力規則あり」として見せる。
                     dataValidationCount++;
                 }
                 else if (elementType == typeof(ConditionalFormatting))

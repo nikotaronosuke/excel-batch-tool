@@ -59,6 +59,13 @@ public sealed record ResolvedHyperlink
     public bool IsExternal => ExternalTarget is not null;
 }
 
+/// <summary>出力へ引き継ぐ入力規則 1 件の概要(出力後の検証に使う)。</summary>
+public sealed record DataValidationSummary(
+    string Sqref,
+    string Type,
+    string? Formula1,
+    string? Formula2);
+
 /// <summary>集約対象 1 件分の計画。</summary>
 public sealed class SheetAggregationPlan
 {
@@ -96,6 +103,10 @@ public sealed class SheetAggregationPlan
 
     /// <summary>出力へ引き継ぐハイパーリンク(リンク先は解決済み)。</summary>
     public IReadOnlyList<ResolvedHyperlink> Hyperlinks { get; init; } = Array.Empty<ResolvedHyperlink>();
+
+    /// <summary>出力へ引き継ぐ入力規則の概要。</summary>
+    public IReadOnlyList<DataValidationSummary> DataValidations { get; init; }
+        = Array.Empty<DataValidationSummary>();
 
     public string SourceDisplay => $"{FileName} / {SheetName}";
 }

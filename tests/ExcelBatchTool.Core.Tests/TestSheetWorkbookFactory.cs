@@ -48,6 +48,24 @@ internal sealed record TestHyperlink(
     bool UseDanglingRelationshipId = false,
     bool UseInternalRelationship = false);
 
+/// <summary>テスト用の入力規則指定。</summary>
+internal sealed record TestDataValidation(
+    string Sqref,
+    string Type,
+    string? Operator = null,
+    string? Formula1 = null,
+    string? Formula2 = null,
+    bool AllowBlank = false,
+    bool ShowDropDown = false,
+    bool ShowInputMessage = false,
+    bool ShowErrorMessage = false,
+    string? ErrorStyle = null,
+    string? ImeMode = null,
+    string? PromptTitle = null,
+    string? Prompt = null,
+    string? ErrorTitle = null,
+    string? Error = null);
+
 /// <summary>集約テスト用のシート定義。</summary>
 internal sealed class TestAggregationSheetSpec
 {
@@ -127,6 +145,18 @@ internal sealed class TestAggregationSheetSpec
     public bool AddConditionalFormatting { get; init; }
 
     public bool AddDataValidation { get; init; }
+
+    /// <summary>個別に指定する入力規則。</summary>
+    public TestDataValidation[] DataValidations { get; init; } = [];
+
+    /// <summary>入力規則コンテナの属性(disablePrompts / xWindow / yWindow)を付ける。</summary>
+    public bool AddDataValidationContainerAttributes { get; init; }
+
+    /// <summary>入力規則に想定外の拡張属性を付ける。</summary>
+    public bool AddUnknownDataValidationAttribute { get; init; }
+
+    /// <summary>Office 2010 以降の拡張入力規則(x14)を extLst へ入れる。</summary>
+    public bool AddX14DataValidation { get; init; }
 
     public bool AddHyperlink { get; init; }
 
@@ -423,16 +453,35 @@ internal static class TestSheetWorkbookFactory
             { SequenceOfReferences = new ListValue<StringValue> { InnerText = "A1:A5" } });
         }
 
-        if (spec.AddDataValidation)
+        if (spec.AddDataValidation || spec.DataValidations.Length > 0)
         {
-            children.Add(new DataValidations(
-                new DataValidation(new Formula1("1"), new Formula2("100"))
+            var container = new DataValidations();
+
+            if (spec.AddDataValidationContainerAttributes)
+            {
+                container.DisablePrompts = true;
+                container.XWindow = 100U;
+                container.YWindow = 200U;
+            }
+
+            if (spec.AddDataValidation)
+            {
+                container.Append(new DataValidation(new Formula1("1"), new Formula2("100"))
                 {
                     Type = DataValidationValues.Whole,
                     Operator = DataValidationOperatorValues.Between,
                     SequenceOfReferences = new ListValue<StringValue> { InnerText = "A1:A5" },
-                })
-            { Count = 1U });
+                });
+            }
+
+            foreach (var validation in spec.DataValidations)
+            {
+                container.Append(BuildDataValidation(validation, spec.AddUnknownDataValidationAttribute));
+            }
+
+            // count を実際と違う値にしておき、出力側で振り直されることを確かめられるようにする。
+            container.Count = 99U;
+            children.Add(container);
         }
 
         // CT_Worksheet の要素順に合わせて印刷/ページレイアウト系を追加する。
@@ -520,6 +569,25 @@ internal static class TestSheetWorkbookFactory
             });
         }
 
+
+        if (spec.AddX14DataValidation)
+        {
+            // Office 2010 以降の拡張入力規則。extLst の中に x14 名前空間で入る。
+            children.Add(new WorksheetExtensionList(
+                new WorksheetExtension(
+                    new DocumentFormat.OpenXml.Office2010.Excel.DataValidations(
+                        new DocumentFormat.OpenXml.Office2010.Excel.DataValidation(
+                            new DocumentFormat.OpenXml.Office2010.Excel.DataValidationForumla1(
+                                new DocumentFormat.OpenXml.Office.Excel.Formula("Sheet2!$A$1:$A$3")),
+                            new DocumentFormat.OpenXml.Office.Excel.ReferenceSequence("A1:A5"))
+                        {
+                            Type = DataValidationValues.List,
+                        })
+                    { Count = 1U })
+                {
+                    Uri = "{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}",
+                }));
+        }
 
         var worksheet = new Worksheet();
         foreach (var child in children)
@@ -659,6 +727,91 @@ internal static class TestSheetWorkbookFactory
         }
 
         workbookPart.Workbook!.Sheets!.Append(sheet);
+    }
+
+    private static DataValidation BuildDataValidation(TestDataValidation spec, bool addUnknownAttribute)
+    {
+        var validation = new DataValidation
+        {
+            SequenceOfReferences = new ListValue<StringValue> { InnerText = spec.Sqref },
+        };
+
+        if (spec.Type is { Length: > 0 } type)
+        {
+            validation.Type = new EnumValue<DataValidationValues> { InnerText = type };
+        }
+
+        if (spec.Operator is { } op)
+        {
+            validation.Operator = new EnumValue<DataValidationOperatorValues> { InnerText = op };
+        }
+
+        if (spec.Formula1 is { } formula1)
+        {
+            validation.Formula1 = new Formula1(formula1);
+        }
+
+        if (spec.Formula2 is { } formula2)
+        {
+            validation.Formula2 = new Formula2(formula2);
+        }
+
+        if (spec.AllowBlank)
+        {
+            validation.AllowBlank = true;
+        }
+
+        if (spec.ShowDropDown)
+        {
+            validation.ShowDropDown = true;
+        }
+
+        if (spec.ShowInputMessage)
+        {
+            validation.ShowInputMessage = true;
+        }
+
+        if (spec.ShowErrorMessage)
+        {
+            validation.ShowErrorMessage = true;
+        }
+
+        if (spec.ErrorStyle is { } errorStyle)
+        {
+            validation.ErrorStyle = new EnumValue<DataValidationErrorStyleValues> { InnerText = errorStyle };
+        }
+
+        if (spec.ImeMode is { } imeMode)
+        {
+            validation.ImeMode = new EnumValue<DataValidationImeModeValues> { InnerText = imeMode };
+        }
+
+        if (spec.PromptTitle is { } promptTitle)
+        {
+            validation.PromptTitle = promptTitle;
+        }
+
+        if (spec.Prompt is { } prompt)
+        {
+            validation.Prompt = prompt;
+        }
+
+        if (spec.ErrorTitle is { } errorTitle)
+        {
+            validation.ErrorTitle = errorTitle;
+        }
+
+        if (spec.Error is { } error)
+        {
+            validation.Error = error;
+        }
+
+        if (addUnknownAttribute)
+        {
+            validation.SetAttribute(new OpenXmlAttribute("ebt", "unknown", "urn:fictional:test", "1"));
+        }
+
+        return validation;
     }
 
     private static SheetViews BuildSheetViews(TestAggregationSheetSpec spec)

@@ -17,7 +17,6 @@ public sealed class SheetAggregationBlockTests
         { "image", "画像" },
         { "table", "テーブル" },
         { "conditionalFormatting", "条件付き書式" },
-        { "dataValidation", "入力規則" },
         { "autoFilter", "オートフィルター" },
         { "comment", "コメント" },
         { "richText", "リッチテキスト" },

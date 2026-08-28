@@ -158,7 +158,7 @@ internal sealed class WorkbookReadContext
             return MergeCellValue.FromNumber(number);
         }
 
-        var serial = _date1904 ? number + 1462 : number;
+        var serial = MergeCellValue.NormalizeSerialTo1900(number, _date1904);
         if (serial < 0 || serial > 2958465)
         {
             // date として解釈できない範囲。誤変換せず数値のまま扱う。
