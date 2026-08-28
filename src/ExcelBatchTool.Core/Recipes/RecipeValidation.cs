@@ -1,4 +1,5 @@
 using System.Globalization;
+using ExcelBatchTool.Core.CsvTransform;
 using ExcelBatchTool.Core.Mutation;
 
 namespace ExcelBatchTool.Core.Recipes;
@@ -62,8 +63,9 @@ internal static class RecipeValidation
             RecipeType.CellInputSet => ValidatePayload(recipe.Name, recipe.CellInputSet, ValidateCellInputSet),
             RecipeType.SourceToFixedCells
                 => ValidatePayload(recipe.Name, recipe.SourceToFixedCells, ValidateSourceToFixedCells),
-            _ => ValidatePayload(
+            RecipeType.SourceTableToTargetTable => ValidatePayload(
                 recipe.Name, recipe.SourceTableToTargetTable, ValidateSourceTableToTargetTable),
+            _ => ValidatePayload(recipe.Name, recipe.CsvTransform, ValidateCsvTransform),
         };
     }
 
@@ -132,6 +134,44 @@ internal static class RecipeValidation
         return ValidateMappings(
             recipe.Mappings.Count,
             recipe.Mappings.Select(mapping => (mapping.SourceColumn, mapping.TargetColumn, mapping.Kind)));
+    }
+
+    private static string? ValidateCsvTransform(CsvTransformRecipe recipe)
+    {
+        if (recipe.HeaderRow < 1)
+        {
+            return "項目名の行が正しくないレシピがあります。";
+        }
+
+        if (recipe.OutputColumns.Count == 0)
+        {
+            return "出力する項目が 1 つも入っていないレシピがあります。";
+        }
+
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in recipe.OutputColumns)
+        {
+            var name = (column.OutputName ?? string.Empty).Trim();
+            if (name.Length == 0 || name.Any(char.IsControl))
+            {
+                return "出力する項目名が正しくないレシピがあります。";
+            }
+
+            if (!names.Add(name))
+            {
+                return $"出力する項目名「{name}」が重複しているレシピがあります。";
+            }
+
+            if (column.ValueSourceKind == CsvValueSourceKind.SourceColumn
+                && string.IsNullOrWhiteSpace(column.SourceColumn))
+            {
+                return "データ元の項目が空のレシピがあります。";
+            }
+        }
+
+        return string.IsNullOrEmpty(recipe.OutputSuffix)
+            ? "出力名が空のレシピがあります。"
+            : null;
     }
 
     private static string? ValidateMappings(

@@ -62,6 +62,58 @@ internal static class XlsxSourceReader
     }
 
     /// <summary>
+    /// 項目名の行より後の行を順に渡す(CSV 変換で使う)。行は保持しない。
+    /// <paramref name="onRecord"/> が false を返したところで読み終える。
+    /// 読み取れないときは理由を返す。
+    /// </summary>
+    public static string? ReadRecords(
+        string filePath,
+        string sheetName,
+        int headerRow,
+        int columnCount,
+        Func<int, IReadOnlyList<SourceValue>, bool> onRecord,
+        CancellationToken cancellationToken)
+    {
+        return Open<string?>(filePath, sheetName, (worksheetPart, context) =>
+        {
+            var numberFormats = context.NumberFormats;
+
+            using var reader = OpenXmlReader.Create(worksheetPart);
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!reader.IsStartElement || reader.ElementType != typeof(Row))
+                {
+                    continue;
+                }
+
+                var row = (Row)reader.LoadCurrentElement()!;
+                if (row.RowIndex?.Value is not { } rowIndex || rowIndex <= (uint)headerRow)
+                {
+                    continue;
+                }
+
+                var cells = IndexCells(row);
+                var values = new SourceValue[columnCount];
+                for (var column = 1; column <= columnCount; column++)
+                {
+                    values[column - 1] = ReadValue(
+                        cells.GetValueOrDefault(column), context, numberFormats);
+                }
+
+                if (!onRecord((int)rowIndex, values))
+                {
+                    break;
+                }
+            }
+
+            return null;
+        },
+        error => error);
+    }
+
+    /// <summary>
     /// 必要なキーに一致する行だけを集める。行そのものは必要な分しか保持しないが、
     /// 重複キーの検出のためキーの一覧だけは通して見る。
     /// </summary>

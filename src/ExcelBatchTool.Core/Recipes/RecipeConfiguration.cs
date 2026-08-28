@@ -1,3 +1,5 @@
+using ExcelBatchTool.Core.CsvTransform;
+
 namespace ExcelBatchTool.Core.Recipes;
 
 /// <summary>
@@ -24,7 +26,9 @@ public static class RecipeConfiguration
         {
             RecipeType.CellInputSet => AreSame(left.CellInputSet, right.CellInputSet),
             RecipeType.SourceToFixedCells => AreSame(left.SourceToFixedCells, right.SourceToFixedCells),
-            _ => AreSame(left.SourceTableToTargetTable, right.SourceTableToTargetTable),
+            RecipeType.SourceTableToTargetTable
+                => AreSame(left.SourceTableToTargetTable, right.SourceTableToTargetTable),
+            _ => AreSame(left.CsvTransform, right.CsvTransform),
         };
     }
 
@@ -70,6 +74,23 @@ public static class RecipeConfiguration
                 (a, b) => Same(a.SourceColumn, b.SourceColumn)
                     && Same(a.TargetColumn, b.TargetColumn)
                     && a.Kind == b.Kind);
+
+    private static bool AreSame(CsvTransformRecipe? left, CsvTransformRecipe? right)
+        => left is not null
+            && right is not null
+            && left.SourceFileKind == right.SourceFileKind
+            && Same(left.SourceSheetName, right.SourceSheetName)
+            && left.HeaderRow == right.HeaderRow
+            && left.Encoding == right.Encoding
+            && left.QuoteMode == right.QuoteMode
+            && Same(left.OutputSuffix, right.OutputSuffix)
+            && SameList(
+                left.OutputColumns,
+                right.OutputColumns,
+                (a, b) => Same(a.OutputName, b.OutputName)
+                    && a.ValueSourceKind == b.ValueSourceKind
+                    && Same(a.SourceColumn, b.SourceColumn)
+                    && Same(a.FixedValue, b.FixedValue));
 
     /// <summary>並び順も含めて同じか。</summary>
     private static bool SameList<T>(

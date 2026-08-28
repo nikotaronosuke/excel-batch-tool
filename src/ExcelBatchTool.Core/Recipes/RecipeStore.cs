@@ -58,6 +58,9 @@ public sealed class RecipeStore
             new RecipeTypeConverter(),
             new CellWriteKindConverter(),
             new SourceFileKindConverter(),
+            new CsvValueSourceKindConverter(),
+            new CsvOutputEncodingConverter(),
+            new CsvQuoteModeConverter(),
         },
     };
 
@@ -350,6 +353,7 @@ public sealed class RecipeStore
         SourceTableToTargetTable = recipe.Type == RecipeType.SourceTableToTargetTable
             ? recipe.SourceTableToTargetTable
             : null,
+        CsvTransform = recipe.Type == RecipeType.CsvTransform ? recipe.CsvTransform : null,
     };
 
     private static RecipeSaveResult Failed(string error, IReadOnlyList<SavedRecipe>? recipes = null)

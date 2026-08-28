@@ -34,12 +34,26 @@ internal static class RecipeSaveGuard
 
         // 今回は変えるところが無い(全部が現在の値と同じ)だけなら、指定そのものは
         // 正しいので保存できる。次回のファイルでは変わるかもしれない。
-        if (!preview.HasBlocks || preview.IsBlockedOnlyByHavingNothingToChange)
+        return !preview.HasBlocks || preview.IsBlockedOnlyByHavingNothingToChange
+            ? null
+            : BlockedReason;
+    }
+
+    /// <summary>CSV 変換の判定。考え方は上と同じ。</summary>
+    public static string? ReasonFor(
+        Core.CsvTransform.CsvTransformPreview? preview, bool isStale, bool matchesLastSuccessfulRun)
+    {
+        if (matchesLastSuccessfulRun)
         {
             return null;
         }
 
-        return BlockedReason;
+        if (preview is null || isStale)
+        {
+            return StaleReason;
+        }
+
+        return preview.HasBlocks ? BlockedReason : null;
     }
 
     /// <summary>更新・削除の確認(画面から使うときのみダイアログを出す)。</summary>
