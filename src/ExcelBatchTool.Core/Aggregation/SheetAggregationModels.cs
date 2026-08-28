@@ -5,6 +5,39 @@ namespace ExcelBatchTool.Core.Aggregation;
 /// <summary>集約対象として選択された 1 つの Worksheet と、その出力シート名。</summary>
 public sealed record SheetSelection(string FilePath, string SheetName, string? OutputSheetName = null);
 
+/// <summary>
+/// 出力へ引き継ぐ印刷・ページレイアウト情報の概要。出力後の検証でも使う。
+/// 範囲文字列はシート名を含まない(出力シート名で組み立て直す)。
+/// </summary>
+public sealed record PrintLayoutSummary
+{
+    public bool HasPageSetupProperties { get; init; }
+
+    public bool HasPrintOptions { get; init; }
+
+    public bool HasPageMargins { get; init; }
+
+    public bool HasPageSetup { get; init; }
+
+    public bool HasHeaderFooter { get; init; }
+
+    public int RowBreakCount { get; init; }
+
+    public int ColumnBreakCount { get; init; }
+
+    public IReadOnlyList<string> PrintAreaRanges { get; init; } = Array.Empty<string>();
+
+    public IReadOnlyList<string> PrintTitleRanges { get; init; } = Array.Empty<string>();
+
+    public bool HasPrintArea => PrintAreaRanges.Count > 0;
+
+    public bool HasPrintTitles => PrintTitleRanges.Count > 0;
+
+    public bool IsEmpty => !HasPageSetupProperties && !HasPrintOptions && !HasPageMargins
+        && !HasPageSetup && !HasHeaderFooter && RowBreakCount == 0 && ColumnBreakCount == 0
+        && !HasPrintArea && !HasPrintTitles;
+}
+
 /// <summary>集約対象 1 件分の計画。</summary>
 public sealed class SheetAggregationPlan
 {
@@ -36,6 +69,9 @@ public sealed class SheetAggregationPlan
 
     /// <summary>出力 Workbook 内での並び順(1 始まり)。</summary>
     public int Order { get; init; }
+
+    /// <summary>出力へ引き継ぐ印刷・ページレイアウト情報。</summary>
+    public PrintLayoutSummary PrintLayout { get; init; } = new();
 
     public string SourceDisplay => $"{FileName} / {SheetName}";
 }

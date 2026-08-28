@@ -48,7 +48,31 @@ internal sealed class SheetCopyScan
 
     /// <summary>結合セルの範囲(A1 形式)。</summary>
     public IReadOnlyList<string> MergeReferences { get; init; } = Array.Empty<string>();
+
+    /// <summary>印刷の拡大縮小設定(sheetPr/pageSetUpPr)。</summary>
+    public PageSetupProperties? PageSetupProperties { get; init; }
+
+    public PrintOptions? PrintOptions { get; init; }
+
+    public PageMargins? PageMargins { get; init; }
+
+    /// <summary>プリンター固有の設定(r:id)を持たない pageSetup のみ保持する。</summary>
+    public PageSetup? PageSetup { get; init; }
+
+    /// <summary>文字列だけのヘッダー・フッター。</summary>
+    public HeaderFooter? HeaderFooter { get; init; }
+
+    public RowBreaks? RowBreaks { get; init; }
+
+    public ColumnBreaks? ColumnBreaks { get; init; }
+
+    /// <summary>印刷範囲・印刷タイトル(シート名を除いた範囲部分)。</summary>
+    public IReadOnlyList<PrintDefinedNameInfo> PrintDefinedNames { get; init; }
+        = Array.Empty<PrintDefinedNameInfo>();
 }
+
+/// <summary>解析済みの印刷範囲・印刷タイトル。範囲はシート名を含まない。</summary>
+internal sealed record PrintDefinedNameInfo(PrintDefinedNameKind Kind, IReadOnlyList<string> Ranges);
 
 /// <summary>
 /// Worksheet を集約できるか検証する。対象ファイルは読み取り専用でしか開かない。
@@ -172,8 +196,10 @@ internal static class WorksheetCopyScanner
             }
 
             var visibility = WorkbookAnalyzer.ResolveVisibility(sheet.State?.Value);
+            var sheetIndex = workbookPart.Workbook!.Sheets!.Elements<Sheet>().ToList().IndexOf(sheet);
 
-            return ScanWorksheetPart(worksheetPart, workbookPart, visibility, cancellationToken);
+            return ScanWorksheetPart(
+                worksheetPart, workbookPart, sheetName, sheetIndex, visibility, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -194,6 +220,8 @@ internal static class WorksheetCopyScanner
     private static SheetCopyScan ScanWorksheetPart(
         WorksheetPart worksheetPart,
         WorkbookPart workbookPart,
+        string sheetName,
+        int sheetIndex,
         SheetVisibility visibility,
         CancellationToken cancellationToken)
     {
@@ -215,6 +243,14 @@ internal static class WorksheetCopyScanner
         uint? zoomScale = null;
         SheetProtection? protection = null;
         var mergeReferences = new List<string>();
+
+        PageSetupProperties? pageSetupProperties = null;
+        PrintOptions? printOptions = null;
+        PageMargins? pageMargins = null;
+        PageSetup? pageSetup = null;
+        HeaderFooter? headerFooter = null;
+        RowBreaks? rowBreaks = null;
+        ColumnBreaks? columnBreaks = null;
 
         var hasFormula = false;
         var hasRichText = false;
@@ -303,22 +339,60 @@ internal static class WorksheetCopyScanner
                 {
                     AddOnce(blocks, "オートフィルターを含むため、Phase 1B.1 では集約できません。");
                 }
-                else if (type == typeof(PrintOptions)
-                    || type == typeof(PageMargins)
-                    || type == typeof(PageSetup)
-                    || type == typeof(HeaderFooter)
-                    || type == typeof(RowBreaks)
-                    || type == typeof(ColumnBreaks)
-                    || type == typeof(DrawingHeaderFooter))
+                else if (type == typeof(PrintOptions))
                 {
-                    AddOnce(blocks, "印刷設定・ページレイアウト情報を含むため、Phase 1B.1 では集約できません。");
+                    printOptions = (PrintOptions)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(PageMargins))
+                {
+                    pageMargins = (PageMargins)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(PageSetup))
+                {
+                    var setup = (PageSetup)reader.LoadCurrentElement()!;
+                    if (setup.Id?.Value is not null)
+                    {
+                        // r:id はプリンター設定パート (devMode) への参照。
+                        // そのまま持ち込むことも黙って外すこともできないので Block する。
+                        AddOnce(blocks,
+                            "プリンター固有の設定を含むため、現在のバージョンでは安全に集約できません。");
+                    }
+                    else
+                    {
+                        pageSetup = (PageSetup)setup.CloneNode(true);
+                    }
+                }
+                else if (type == typeof(HeaderFooter))
+                {
+                    var element = (HeaderFooter)reader.LoadCurrentElement()!;
+                    if (ContainsHeaderFooterImage(element))
+                    {
+                        AddOnce(blocks,
+                            "ヘッダー・フッターに画像を含むため、現在のバージョンでは集約できません。");
+                    }
+                    else
+                    {
+                        headerFooter = (HeaderFooter)element.CloneNode(true);
+                    }
+                }
+                else if (type == typeof(RowBreaks))
+                {
+                    rowBreaks = (RowBreaks)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(ColumnBreaks))
+                {
+                    columnBreaks = (ColumnBreaks)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(DrawingHeaderFooter) || type == typeof(LegacyDrawingHeaderFooter))
+                {
+                    AddOnce(blocks, "ヘッダー・フッターに画像を含むため、現在のバージョンでは集約できません。");
                 }
                 else if (type == typeof(SheetProperties))
                 {
                     var properties = (SheetProperties)reader.LoadCurrentElement()!;
-                    if (properties.PageSetupProperties is not null)
+                    if (properties.PageSetupProperties is { } setupProperties)
                     {
-                        AddOnce(blocks, "印刷設定・ページレイアウト情報を含むため、Phase 1B.1 では集約できません。");
+                        pageSetupProperties = (PageSetupProperties)setupProperties.CloneNode(true);
                     }
 
                     if (properties.TabColor is not null)
@@ -353,11 +427,31 @@ internal static class WorksheetCopyScanner
             blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
         }
 
+        if (FindBrokenBreak(rowBreaks, maxId: 1_048_575) is { } rowBreakError)
+        {
+            blocks.Add($"行の改ページ位置の定義が壊れています({rowBreakError})。");
+        }
+
+        if (FindBrokenBreak(columnBreaks, maxId: 16_383) is { } columnBreakError)
+        {
+            blocks.Add($"列の改ページ位置の定義が壊れています({columnBreakError})。");
+        }
+
+        var printDefinedNames = ReadPrintDefinedNames(workbookPart, sheetName, sheetIndex, blocks);
+
         return new SheetCopyScan
         {
             BlockReasons = blocks,
             WarningReasons = warnings,
             Visibility = visibility,
+            PageSetupProperties = pageSetupProperties,
+            PrintOptions = printOptions,
+            PageMargins = pageMargins,
+            PageSetup = pageSetup,
+            HeaderFooter = headerFooter,
+            RowBreaks = rowBreaks,
+            ColumnBreaks = columnBreaks,
+            PrintDefinedNames = printDefinedNames,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,
@@ -428,6 +522,106 @@ internal static class WorksheetCopyScanner
         {
             blocks.Add("ActiveX コントロールを含むため、Phase 1B.1 では集約できません。");
         }
+    }
+
+    /// <summary>
+    /// ヘッダー・フッターの書式コード「&amp;G」は画像の差し込みを表す。
+    /// 画像は移植しないので、文字だけコピーして黙って落とさないよう検出する。
+    /// </summary>
+    private static bool ContainsHeaderFooterImage(HeaderFooter headerFooter)
+        => headerFooter.Descendants<OpenXmlLeafTextElement>()
+            .Any(element => element.Text?.Contains("&G", StringComparison.Ordinal) == true);
+
+    /// <summary>改ページ定義の壊れを探す。問題が無ければ null。</summary>
+    private static string? FindBrokenBreak(OpenXmlCompositeElement? breaks, uint maxId)
+    {
+        if (breaks is null)
+        {
+            return null;
+        }
+
+        foreach (var item in breaks.Elements<Break>())
+        {
+            if (item.Id?.Value is not { } id)
+            {
+                return "位置が指定されていません";
+            }
+
+            if (id == 0 || id > maxId)
+            {
+                return $"位置 {id} は範囲外です";
+            }
+
+            if (item.Min?.Value is { } min && item.Max?.Value is { } max && min > max)
+            {
+                return $"範囲が逆転しています({min} > {max})";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// このシートに紐づく Defined Name を読む。印刷範囲・印刷タイトルだけを対象にし、
+    /// それ以外のシート固有 Defined Name や解釈できない参照は Block 理由にする。
+    /// </summary>
+    private static List<PrintDefinedNameInfo> ReadPrintDefinedNames(
+        WorkbookPart workbookPart,
+        string sheetName,
+        int sheetIndex,
+        List<string> blocks)
+    {
+        var results = new List<PrintDefinedNameInfo>();
+        var definedNames = workbookPart.Workbook?.DefinedNames?.Elements<DefinedName>().ToList() ?? [];
+        if (definedNames.Count == 0)
+        {
+            return results;
+        }
+
+        if (sheetIndex < 0)
+        {
+            blocks.Add("シートの位置を特定できないため、印刷範囲・印刷タイトルを安全に扱えません。");
+            return results;
+        }
+
+        var localNames = definedNames
+            .Where(name => name.LocalSheetId?.Value == (uint)sheetIndex)
+            .ToList();
+
+        foreach (var group in localNames.GroupBy(name => name.Name?.Value ?? string.Empty, StringComparer.Ordinal))
+        {
+            var kind = group.Key switch
+            {
+                PrintDefinedNameParser.PrintAreaName => (PrintDefinedNameKind?)PrintDefinedNameKind.PrintArea,
+                PrintDefinedNameParser.PrintTitlesName => PrintDefinedNameKind.PrintTitles,
+                _ => null,
+            };
+
+            if (kind is null)
+            {
+                blocks.Add($"このシートに固有の名前定義「{group.Key}」は現在のバージョンでは引き継げません。");
+                continue;
+            }
+
+            if (group.Count() > 1)
+            {
+                blocks.Add(
+                    $"{PrintDefinedNameParser.DisplayNameOf(kind.Value)}の定義がこのシートに複数あります。");
+                continue;
+            }
+
+            var definedName = group.Single();
+            if (PrintDefinedNameParser.TryParse(definedName.Text, sheetName, kind.Value, out var ranges, out var error))
+            {
+                results.Add(new PrintDefinedNameInfo(kind.Value, ranges));
+            }
+            else if (error is not null)
+            {
+                blocks.Add(error);
+            }
+        }
+
+        return results;
     }
 
     private static bool HasDuplicateOrOverlappingMerges(IReadOnlyList<string> references)

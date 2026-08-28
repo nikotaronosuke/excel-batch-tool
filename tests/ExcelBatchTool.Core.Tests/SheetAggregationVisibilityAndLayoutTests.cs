@@ -102,9 +102,13 @@ public sealed class SheetAggregationVisibilityAndLayoutTests
         "pageSetupProperties",
     };
 
+    /// <summary>
+    /// Phase 1B.1.1 では Block していたが、Phase 1B.2A で安全に移植できるようになったため
+    /// これらだけを理由に Block しない(D-016)。
+    /// </summary>
     [Theory]
     [MemberData(nameof(PrintLayoutElements))]
-    public void Preview_SelectedSheetWithPrintLayoutInformation_IsBlocked(string element)
+    public void Preview_SelectedSheetWithPrintLayoutInformation_IsNoLongerBlocked(string element)
     {
         using var dir = new TempDir();
         var path = dir.File("A.xlsx");
@@ -112,8 +116,11 @@ public sealed class SheetAggregationVisibilityAndLayoutTests
 
         var preview = CreatePreview((path, "表"));
 
-        Assert.False(preview.CanExecute);
-        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("印刷設定・ページレイアウト"));
+        Assert.True(preview.CanExecute, string.Join(" / ", preview.Blocks.Select(issue => issue.Message)));
+        Assert.DoesNotContain(preview.Blocks, issue => issue.Message.Contains("印刷設定・ページレイアウト"));
+
+        var output = dir.File("out.xlsx");
+        Assert.True(new SheetAggregator().Execute(preview, output).Success);
     }
 
     [Theory]
@@ -176,13 +183,13 @@ public sealed class SheetAggregationVisibilityAndLayoutTests
             new TestAggregationSheetSpec { Name = "非常に非表示", Rows = [["C"]], IsVeryHidden = true },
         ]);
         TestSheetWorkbookFactory.Create(b,
-            [new TestAggregationSheetSpec { Name = "印刷設定あり", Rows = [["D"]], AddPageSetup = true }]);
+            [new TestAggregationSheetSpec { Name = "グラフあり", Rows = [["D"]], AddChart = true }]);
 
         var inputs = new[] { a, b };
         var before = inputs.ToDictionary(path => path, Snapshot);
 
         // Block されるファイルもプレビューに通す。
-        var blocked = CreatePreview((a, "表示"), (b, "印刷設定あり"));
+        var blocked = CreatePreview((a, "表示"), (b, "グラフあり"));
         Assert.False(blocked.CanExecute);
 
         var preview = CreatePreview((a, "表示"), (a, "非表示"), (a, "非常に非表示"));
