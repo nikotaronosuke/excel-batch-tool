@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using ExcelBatchTool.Core;
 using ExcelBatchTool.Core.Merge;
 using ExcelBatchTool.Core.Mutation;
+using ExcelBatchTool.Core.Recipes;
 
 namespace ExcelBatchTool.App.ViewModels;
 
@@ -99,6 +100,14 @@ public sealed class MutationOperationViewModel : ObservableObject
     /// <summary>「種類」列の選択肢。</summary>
     public static IReadOnlyList<string> KindOptions { get; } = [KindText, KindNumber, KindBlank];
 
+    /// <summary>保存した種類を画面の表示へ戻す。</summary>
+    internal static string DisplayOf(CellWriteKind kind) => kind switch
+    {
+        CellWriteKind.Number => KindNumber,
+        CellWriteKind.Blank => KindBlank,
+        _ => KindText,
+    };
+
     private readonly Action _onChanged;
     private string _cellReference = string.Empty;
     private string _kindDisplay = KindText;
@@ -165,7 +174,7 @@ public sealed class MutationOperationViewModel : ObservableObject
 }
 
 /// <summary>「セルをまとめて変更」(Phase 2A / 2B)の ViewModel。</summary>
-public sealed class CellMutationViewModel : ObservableObject
+public sealed class CellMutationViewModel : ObservableObject, IRecipeHost
 {
     private readonly CellMutationPlanner _planner = new();
     private readonly CellMutator _mutator = new();
@@ -185,10 +194,21 @@ public sealed class CellMutationViewModel : ObservableObject
     {
     }
 
-    /// <summary>テスト用: クリップボードの読み取りを差し替えられるようにする。</summary>
-    internal CellMutationViewModel(Func<string?> readClipboardText)
+    /// <summary>レシピの置き場所だけを指定する(画面から使うときの経路)。</summary>
+    internal CellMutationViewModel(RecipeStore recipeStore)
+        : this(ReadClipboardText, recipeStore)
+    {
+    }
+
+    /// <summary>テスト用: クリップボードの読み取り・レシピの置き場所を差し替えられるようにする。</summary>
+    internal CellMutationViewModel(
+        Func<string?> readClipboardText,
+        RecipeStore? recipeStore = null,
+        Func<string, bool>? confirm = null)
     {
         _readClipboardText = readClipboardText;
+        Recipes = new RecipeAreaViewModel(
+            this, recipeStore ?? new RecipeStore(), confirm ?? RecipeSaveGuard.AskInDialog);
         RefreshPreviewCommand = new RelayCommand(
             () => _ = RefreshPreviewAsync(),
             () => !IsBusy && SelectedSheetCount > 0);
@@ -206,6 +226,9 @@ public sealed class CellMutationViewModel : ObservableObject
 
     /// <summary>入力セット(変更するセルの一覧)。</summary>
     public ObservableCollection<MutationOperationViewModel> Operations { get; } = [];
+
+    /// <summary>このタブの処理設定(レシピ)。</summary>
+    public RecipeAreaViewModel Recipes { get; }
 
     public RelayCommand RefreshPreviewCommand { get; }
 
@@ -574,6 +597,51 @@ public sealed class CellMutationViewModel : ObservableObject
             rows.Clear(); // 一部だけ追加しない。
             return false;
         }
+    }
+
+    RecipeType IRecipeHost.RecipeType => RecipeType.CellInputSet;
+
+    string? IRecipeHost.RecipeSaveBlockedReason => RecipeSaveGuard.ReasonFor(_preview, IsPreviewStale);
+
+    /// <summary>今の入力セットをレシピにする。対象のファイル・シートは含めない。</summary>
+    SavedRecipe IRecipeHost.CreateRecipe(string name) => new()
+    {
+        Name = name,
+        Type = RecipeType.CellInputSet,
+        CellInputSet = new CellInputSetRecipe
+        {
+            Operations = [.. Operations.Select(operation => new RecipeOperation
+            {
+                Cell = operation.CellReference.Trim(),
+                Kind = operation.Kind,
+                Value = operation.Kind == CellWriteKind.Blank ? null : operation.ValueText,
+            })],
+            OutputSuffix = OutputSuffix,
+        },
+    };
+
+    /// <summary>レシピを画面へ戻す。対象ファイルの選択はそのまま残し、プレビューはやり直させる。</summary>
+    IReadOnlyList<string> IRecipeHost.ApplyRecipe(SavedRecipe recipe)
+    {
+        var payload = recipe.CellInputSet!;
+
+        Operations.Clear();
+        foreach (var operation in payload.Operations)
+        {
+            Operations.Add(new MutationOperationViewModel(OnSettingsChanged)
+            {
+                CellReference = operation.Cell,
+                KindDisplay = MutationOperationViewModel.DisplayOf(operation.Kind),
+                ValueText = operation.Value ?? string.Empty,
+            });
+        }
+
+        SelectedOperation = null;
+        OutputSuffix = payload.OutputSuffix;
+
+        // 値が同じでも必ずプレビューをやり直させる。
+        OnSettingsChanged();
+        return [];
     }
 
     /// <summary>クリップボードの文字列を読む(UI からの実行時のみ使う)。</summary>

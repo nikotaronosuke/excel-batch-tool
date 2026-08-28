@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.IO;
 using ExcelBatchTool.Core;
+using ExcelBatchTool.Core.Recipes;
 
 namespace ExcelBatchTool.App.ViewModels;
 
@@ -18,19 +19,31 @@ public sealed class MainViewModel : ObservableObject
     {
     }
 
+    /// <param name="recipeStore">
+    /// 処理設定(レシピ)の置き場所。既定は %LOCALAPPDATA% の中で、外部へは送らない。
+    /// </param>
     public MainViewModel(
         Func<string[]?> pickFiles,
         Func<string, string?> pickSavePath,
-        Func<string?> pickSourceFile)
+        Func<string?> pickSourceFile,
+        RecipeStore? recipeStore = null)
     {
         _pickFiles = pickFiles;
+
+        // 3 つのタブで同じファイルを見る(種類ごとに一覧を分けて表示する)。
+        var recipes = recipeStore ?? new RecipeStore();
+
         Merge = new MergeViewModel(pickSavePath);
         Aggregation = new SheetAggregationViewModel(pickSavePath);
-        Mutation = new CellMutationViewModel();
-        Mapping = new SourceMappingViewModel(pickSourceFile);
-        TableUpdate = new TableUpdateViewModel(pickSourceFile);
+        Mutation = new CellMutationViewModel(recipes);
+        Mapping = new SourceMappingViewModel(pickSourceFile, recipes);
+        TableUpdate = new TableUpdateViewModel(pickSourceFile, recipes);
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
+
+        Mutation.Recipes.Reload();
+        Mapping.Recipes.Reload();
+        TableUpdate.Recipes.Reload();
     }
 
     public ObservableCollection<WorkbookItemViewModel> Files { get; } = [];
