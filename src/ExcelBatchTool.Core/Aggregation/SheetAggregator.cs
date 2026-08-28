@@ -149,9 +149,13 @@ public sealed class SheetAggregator
                 // 外部リンクは出力側で relationship を張り直す(Source の r:id は使わない)。
                 var hyperlinks = BuildHyperlinks(worksheetPart, plan.Hyperlinks);
 
+                // 条件付き書式が使う書式は出力の dxfs へ写し、dxfId を出力側の位置に差し替える。
+                var conditionalFormattings =
+                    BuildConditionalFormattings(scan, styles, current.Key, plan);
+
                 WriteWorksheet(
-                    worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, hyperlinks, plan,
-                    cancellationToken);
+                    worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, hyperlinks,
+                    conditionalFormattings, plan, cancellationToken);
 
                 var sheet = new Sheet
                 {
@@ -278,6 +282,7 @@ public sealed class SheetAggregator
         SheetCopyScan scan,
         uint[] styleMap,
         Hyperlinks? hyperlinks,
+        IReadOnlyList<ConditionalFormatting> conditionalFormattings,
         SheetAggregationPlan plan,
         CancellationToken cancellationToken)
     {
@@ -338,7 +343,12 @@ public sealed class SheetAggregator
             });
         }
 
-        // CT_Worksheet では dataValidations → hyperlinks → printOptions の順。
+        // CT_Worksheet では conditionalFormatting → dataValidations → hyperlinks → printOptions の順。
+        foreach (var conditionalFormatting in conditionalFormattings)
+        {
+            writer.WriteElement(conditionalFormatting);
+        }
+
         if (BuildDataValidations(scan) is { } dataValidations)
         {
             writer.WriteElement(dataValidations);
@@ -387,6 +397,37 @@ public sealed class SheetAggregator
         }
 
         writer.WriteEndElement();
+    }
+
+    /// <summary>
+    /// 条件付き書式を出力用に組み立てる。書式(dxf)は出力の dxfs へ写し、
+    /// ルールの dxfId を出力側の位置へ差し替える。適用範囲と優先順位は元の値のまま。
+    /// </summary>
+    private static List<ConditionalFormatting> BuildConditionalFormattings(
+        SheetCopyScan scan,
+        OutputStylesheetBuilder styles,
+        string sourceKey,
+        SheetAggregationPlan plan)
+    {
+        var sources = scan.ConditionalFormattings.Where(info => info.BlockReason is null).ToList();
+
+        if (sources.Count != plan.ConditionalFormattings.Count)
+        {
+            throw new InvalidOperationException(
+                $"{plan.SourceDisplay}: 条件付き書式の数がプレビューと一致しません。");
+        }
+
+        var results = new List<ConditionalFormatting>(sources.Count);
+        foreach (var info in sources)
+        {
+            var rules = info.Rules.Select(rule => ConditionalFormattingScanner.BuildOutputRule(
+                rule,
+                styles.AddDifferentialFormat(sourceKey, rule.SourceDxfId, rule.Dxf!)));
+
+            results.Add(ConditionalFormattingScanner.BuildOutputFormatting(info.Sqref, rules));
+        }
+
+        return results;
     }
 
     /// <summary>x14 リスト入力規則の extLst を組み立てる(参照元は解決済みの値を使う)。</summary>
@@ -646,7 +687,32 @@ public sealed class SheetAggregator
                 return $"シート数が想定と異なります(想定 {preview.Sheets.Count} / 実際 {sheets.Count})。";
             }
 
-            var cellFormatCount = workbookPart.WorkbookStylesPart?.Stylesheet?.CellFormats?.Count() ?? 0;
+            var stylesheet = workbookPart.WorkbookStylesPart?.Stylesheet;
+            var cellFormatCount = stylesheet?.CellFormats?.Count() ?? 0;
+
+            var differentialFormats = stylesheet?.DifferentialFormats?
+                .Elements<DifferentialFormat>().ToList() ?? [];
+
+            if (stylesheet?.DifferentialFormats is { } dxfs
+                && dxfs.Count?.Value != (uint)differentialFormats.Count)
+            {
+                return $"条件付き書式の書式の件数表記が実際と一致しません"
+                    + $"(表記 {dxfs.Count?.Value} / 実際 {differentialFormats.Count})。";
+            }
+
+            var numberFormats = new Dictionary<uint, string>();
+            foreach (var format in stylesheet?.NumberingFormats?.Elements<NumberingFormat>() ?? [])
+            {
+                if (format.NumberFormatId?.Value is not { } id || format.FormatCode?.Value is not { } code)
+                {
+                    return "表示形式の定義が不完全です。";
+                }
+
+                if (!numberFormats.TryAdd(id, code))
+                {
+                    return $"表示形式の定義 {id} が重複しています。";
+                }
+            }
 
             for (var index = 0; index < sheets.Count; index++)
             {
@@ -700,6 +766,12 @@ public sealed class SheetAggregator
                 if (CheckX14ListValidations(worksheetPart, expected) is { } x14Error)
                 {
                     return x14Error;
+                }
+
+                if (CheckConditionalFormattings(worksheetPart, expected, differentialFormats, numberFormats)
+                    is { } conditionalFormattingError)
+                {
+                    return conditionalFormattingError;
                 }
             }
 
@@ -860,6 +932,135 @@ public sealed class SheetAggregator
             {
                 return $"シート「{expected.OutputSheetName}」の入力規則に元ブックの識別子が残っています。";
             }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 条件付き書式が想定どおり出力されたか確かめる。適用範囲・優先順位・種類ごとの設定に加え、
+    /// dxfId が出力の書式一覧を正しく指しているか(別ブックの書式と入れ替わっていないか)も見る。
+    /// </summary>
+    private static string? CheckConditionalFormattings(
+        WorksheetPart worksheetPart,
+        SheetAggregationPlan expected,
+        IReadOnlyList<DifferentialFormat> differentialFormats,
+        IReadOnlyDictionary<uint, string> numberFormats)
+    {
+        var written = worksheetPart.Worksheet?.Elements<ConditionalFormatting>().ToList() ?? [];
+
+        if (written.Count != expected.ConditionalFormattings.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」の条件付き書式の数が想定と異なります"
+                + $"(想定 {expected.ConditionalFormattings.Count} / 実際 {written.Count})。";
+        }
+
+        for (var index = 0; index < written.Count; index++)
+        {
+            var actual = written[index];
+            var wanted = expected.ConditionalFormattings[index];
+
+            if (!string.Equals(actual.SequenceOfReferences?.InnerText, wanted.Sqref, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の条件付き書式の適用範囲が想定と異なります"
+                    + $"(想定「{wanted.Sqref}」/ 実際「{actual.SequenceOfReferences?.InnerText}」)。";
+            }
+
+            var actualRules = actual.Elements<ConditionalFormattingRule>().ToList();
+            if (actualRules.Count != wanted.Rules.Count)
+            {
+                return $"シート「{expected.OutputSheetName}」の {wanted.Sqref} の条件付き書式のルール数が"
+                    + $"想定と異なります(想定 {wanted.Rules.Count} / 実際 {actualRules.Count})。";
+            }
+
+            for (var ruleIndex = 0; ruleIndex < actualRules.Count; ruleIndex++)
+            {
+                if (CheckConditionalFormattingRule(
+                    actualRules[ruleIndex], wanted.Rules[ruleIndex], wanted.Sqref,
+                    expected.OutputSheetName, differentialFormats, numberFormats) is { } ruleError)
+                {
+                    return ruleError;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? CheckConditionalFormattingRule(
+        ConditionalFormattingRule actual,
+        ConditionalFormattingRuleSummary wanted,
+        string sqref,
+        string outputSheetName,
+        IReadOnlyList<DifferentialFormat> differentialFormats,
+        IReadOnlyDictionary<uint, string> numberFormats)
+    {
+        var prefix = $"シート「{outputSheetName}」の {sqref} の条件付き書式";
+
+        if (!string.Equals(actual.Type?.InnerText, wanted.Type, StringComparison.Ordinal))
+        {
+            return $"{prefix}の種類が想定と異なります"
+                + $"(想定「{wanted.Type}」/ 実際「{actual.Type?.InnerText}」)。";
+        }
+
+        if (actual.Priority?.Value != wanted.Priority)
+        {
+            return $"{prefix}の優先順位が想定と異なります"
+                + $"(想定 {wanted.Priority} / 実際 {actual.Priority?.Value})。";
+        }
+
+        if (actual.StopIfTrue?.Value != wanted.StopIfTrue)
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の「条件を満たす場合は停止」設定が想定と異なります。";
+        }
+
+        if (actual.Rank?.Value != wanted.Rank
+            || actual.Percent?.Value != wanted.Percent
+            || actual.Bottom?.Value != wanted.Bottom)
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の上位/下位の指定が想定と異なります。";
+        }
+
+        if (actual.AboveAverage?.Value != wanted.AboveAverage
+            || actual.EqualAverage?.Value != wanted.EqualAverage
+            || actual.StdDev?.Value != wanted.StandardDeviation)
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の平均条件の指定が想定と異なります。";
+        }
+
+        if (actual.FormatId?.Value is not { } dxfId)
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})に書式の指定がありません。";
+        }
+
+        if (dxfId >= (uint)differentialFormats.Count)
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})が存在しない書式を参照しています"
+                + $"(参照 {dxfId} / 書式数 {differentialFormats.Count})。";
+        }
+
+        var dxf = differentialFormats[(int)dxfId];
+        var actualChildren = ConditionalFormattingScanner.DescribeDxfChildren(dxf);
+        if (!string.Equals(actualChildren, wanted.FormatChildren, StringComparison.Ordinal))
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の書式の内容が想定と異なります"
+                + $"(想定「{wanted.FormatChildren}」/ 実際「{actualChildren}」)。";
+        }
+
+        var actualNumberCode = dxf.NumberingFormat?.FormatCode?.Value;
+        if (!string.Equals(actualNumberCode, wanted.FormatNumberCode, StringComparison.Ordinal))
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の書式の表示形式が想定と異なります"
+                + $"(想定「{wanted.FormatNumberCode}」/ 実際「{actualNumberCode}」)。";
+        }
+
+        // ID がブックの表示形式一覧と食い違っていると、どちらを見るかで結果が変わる。
+        if (dxf.NumberingFormat?.NumberFormatId?.Value is { } numberFormatId
+            && numberFormats.TryGetValue(numberFormatId, out var registered)
+            && !string.Equals(registered, actualNumberCode, StringComparison.Ordinal))
+        {
+            return $"{prefix}(優先順位 {wanted.Priority})の書式の表示形式が"
+                + $"ブックの定義と食い違っています(書式「{actualNumberCode}」/ ブック「{registered}」)。";
         }
 
         return null;

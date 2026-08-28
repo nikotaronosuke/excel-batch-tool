@@ -164,6 +164,12 @@ internal sealed class TestAggregationSheetSpec
 
     public bool AddConditionalFormatting { get; init; }
 
+    /// <summary>個別に指定する条件付き書式。</summary>
+    public TestConditionalFormatting[] ConditionalFormattings { get; init; } = [];
+
+    /// <summary>Office 2010 以降の拡張条件付き書式(x14)を extLst へ入れる。</summary>
+    public bool AddX14ConditionalFormatting { get; init; }
+
     public bool AddDataValidation { get; init; }
 
     /// <summary>個別に指定する入力規則。</summary>
@@ -197,6 +203,92 @@ internal sealed class TestAggregationSheetSpec
     public bool AddRichTextCell { get; init; }
 }
 
+/// <summary>テスト用の条件付き書式(1 つの適用範囲とそのルール群)。</summary>
+internal sealed record TestConditionalFormatting
+{
+    public string Sqref { get; init; } = "A1:A5";
+
+    /// <summary>ピボットテーブル用の条件付き書式として作る。</summary>
+    public bool Pivot { get; init; }
+
+    /// <summary>想定外の拡張属性を付ける。</summary>
+    public bool AddUnknownAttribute { get; init; }
+
+    /// <summary>cfRule 以外の子要素を入れる。</summary>
+    public bool AddUnknownChild { get; init; }
+
+    public TestConditionalFormattingRule[] Rules { get; init; } = [];
+}
+
+/// <summary>テスト用の条件付き書式ルール 1 件。null の属性は出力しない。</summary>
+internal sealed record TestConditionalFormattingRule
+{
+    /// <summary>cfRule の type(duplicateValues / top10 / cellIs など)。</summary>
+    public required string Type { get; init; }
+
+    public int? Priority { get; init; } = 1;
+
+    /// <summary>参照する dxf の位置。null なら dxfId 属性を書かない。</summary>
+    public uint? DxfId { get; init; } = 0U;
+
+    public bool? StopIfTrue { get; init; }
+
+    public uint? Rank { get; init; }
+
+    public bool? Percent { get; init; }
+
+    public bool? Bottom { get; init; }
+
+    public bool? AboveAverage { get; init; }
+
+    public bool? EqualAverage { get; init; }
+
+    public int? StdDev { get; init; }
+
+    /// <summary>数式(formula 子要素)。</summary>
+    public string? Formula { get; init; }
+
+    public string? Operator { get; init; }
+
+    public string? Text { get; init; }
+
+    public string? TimePeriod { get; init; }
+
+    /// <summary>想定外の拡張属性を付ける。</summary>
+    public bool AddUnknownAttribute { get; init; }
+}
+
+/// <summary>テスト用の dxf(条件付き書式が使う書式)。CT_Dxf の子要素順で作る。</summary>
+internal sealed record TestDifferentialFormat
+{
+    public bool Bold { get; init; }
+
+    /// <summary>文字色(ARGB)。</summary>
+    public string? FontArgb { get; init; }
+
+    /// <summary>文字色にテーマ色を使う。</summary>
+    public uint? FontThemeColor { get; init; }
+
+    /// <summary>表示形式。ID は 164 から自動で採番する。</summary>
+    public string? NumberFormatCode { get; init; }
+
+    /// <summary>formatCode を持たない表示形式(移植できない形)。</summary>
+    public uint? NumberFormatIdWithoutCode { get; init; }
+
+    /// <summary>背景色(ARGB)。</summary>
+    public string? FillArgb { get; init; }
+
+    public bool CenterAlignment { get; init; }
+
+    public bool ThinBorder { get; init; }
+
+    /// <summary>ロック解除の指定を入れる。</summary>
+    public bool Unlocked { get; init; }
+
+    /// <summary>想定外の拡張属性を付ける。</summary>
+    public bool AddUnknownAttribute { get; init; }
+}
+
 /// <summary>Sheet 集約テスト用の .xlsx を架空データのみで生成する。</summary>
 internal static class TestSheetWorkbookFactory
 {
@@ -210,7 +302,8 @@ internal static class TestSheetWorkbookFactory
         bool date1904 = false,
         bool addMacro = false,
         bool addExternalLink = false,
-        IReadOnlyList<TestDefinedName>? definedNames = null)
+        IReadOnlyList<TestDefinedName>? definedNames = null,
+        IReadOnlyList<TestDifferentialFormat>? differentialFormats = null)
     {
         using var document = SpreadsheetDocument.Create(path, SpreadsheetDocumentType.Workbook);
         var workbookPart = document.AddWorkbookPart();
@@ -224,7 +317,7 @@ internal static class TestSheetWorkbookFactory
         workbookPart.Workbook.AppendChild(new Sheets());
 
         var stylesPart = workbookPart.AddNewPart<WorkbookStylesPart>();
-        stylesPart.Stylesheet = BuildStylesheet(styles ?? []);
+        stylesPart.Stylesheet = BuildStylesheet(styles ?? [], differentialFormats ?? []);
         stylesPart.Stylesheet.Save();
 
         var sharedStrings = new List<SharedStringItem>();
@@ -502,6 +595,11 @@ internal static class TestSheetWorkbookFactory
             { SequenceOfReferences = new ListValue<StringValue> { InnerText = "A1:A5" } });
         }
 
+        foreach (var conditionalFormatting in spec.ConditionalFormattings)
+        {
+            children.Add(BuildConditionalFormatting(conditionalFormatting));
+        }
+
         if (spec.AddDataValidation || spec.DataValidations.Length > 0)
         {
             var container = new DataValidations();
@@ -625,7 +723,7 @@ internal static class TestSheetWorkbookFactory
             x14Specs.Insert(0, new TestX14Validation("A1:A5", "Sheet2!$A$1:$A$3"));
         }
 
-        if (x14Specs.Count > 0 || spec.AddUnsupportedExtension)
+        if (x14Specs.Count > 0 || spec.AddUnsupportedExtension || spec.AddX14ConditionalFormatting)
         {
             var extensionList = new WorksheetExtensionList();
 
@@ -647,6 +745,21 @@ internal static class TestSheetWorkbookFactory
                 };
                 extension.AddNamespaceDeclaration(
                     "x14", "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main");
+                extensionList.Append(extension);
+            }
+
+            if (spec.AddX14ConditionalFormatting)
+            {
+                // 新しい形式の条件付き書式(データバー等)。標準形式だけ写して黙って落とさないこと。
+                var extension = new WorksheetExtension
+                {
+                    Uri = "{78C0D931-6437-407d-A8EE-F0AAD7539E65}",
+                };
+                extension.AddNamespaceDeclaration(
+                    "x14", "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main");
+                extension.AppendChild(new DocumentFormat.OpenXml.Office2010.Excel.ConditionalFormattings(
+                    new DocumentFormat.OpenXml.Office2010.Excel.ConditionalFormatting(
+                        new DocumentFormat.OpenXml.Office.Excel.ReferenceSequence("A1:A5"))));
                 extensionList.Append(extension);
             }
 
@@ -1022,7 +1135,9 @@ internal static class TestSheetWorkbookFactory
         return sharedStrings.Count - 1;
     }
 
-    private static Stylesheet BuildStylesheet(IReadOnlyList<TestStyle> styles)
+    private static Stylesheet BuildStylesheet(
+        IReadOnlyList<TestStyle> styles,
+        IReadOnlyList<TestDifferentialFormat> differentialFormats)
     {
         var fonts = new Fonts(new Font(new FontSize { Val = 11D }));
         var fills = new Fills(
@@ -1118,7 +1233,199 @@ internal static class TestSheetWorkbookFactory
         stylesheet.Append(cellFormats);
         stylesheet.Append(new CellStyles(new CellStyle { Name = "Normal", FormatId = 0U, BuiltinId = 0U }) { Count = 1U });
 
+        if (differentialFormats.Count > 0)
+        {
+            var dxfs = new DifferentialFormats { Count = (uint)differentialFormats.Count };
+            foreach (var spec in differentialFormats)
+            {
+                dxfs.Append(BuildDifferentialFormat(spec, ref nextNumberFormatId));
+            }
+
+            stylesheet.Append(dxfs);
+        }
+
         return stylesheet;
+    }
+
+    /// <summary>CT_Dxf の子要素順(font, numFmt, fill, alignment, border, protection)で作る。</summary>
+    private static DifferentialFormat BuildDifferentialFormat(
+        TestDifferentialFormat spec,
+        ref uint nextNumberFormatId)
+    {
+        var dxf = new DifferentialFormat();
+
+        if (spec.Bold || spec.FontArgb is not null || spec.FontThemeColor is not null)
+        {
+            var font = new Font();
+            if (spec.Bold)
+            {
+                font.Append(new Bold());
+            }
+
+            if (spec.FontThemeColor is { } theme)
+            {
+                font.Append(new Color { Theme = theme });
+            }
+            else if (spec.FontArgb is { } argb)
+            {
+                font.Append(new Color { Rgb = argb });
+            }
+
+            dxf.Append(font);
+        }
+
+        if (spec.NumberFormatCode is { } code)
+        {
+            dxf.Append(new NumberingFormat { NumberFormatId = nextNumberFormatId++, FormatCode = code });
+        }
+        else if (spec.NumberFormatIdWithoutCode is { } numberFormatId)
+        {
+            dxf.Append(new NumberingFormat { NumberFormatId = numberFormatId });
+        }
+
+        if (spec.FillArgb is { } fillArgb)
+        {
+            dxf.Append(new Fill(new PatternFill
+            {
+                BackgroundColor = new BackgroundColor { Rgb = fillArgb },
+            }));
+        }
+
+        if (spec.CenterAlignment)
+        {
+            dxf.Append(new Alignment { Horizontal = HorizontalAlignmentValues.Center });
+        }
+
+        if (spec.ThinBorder)
+        {
+            dxf.Append(new Border(
+                new LeftBorder(new Color { Auto = true }) { Style = BorderStyleValues.Thin },
+                new RightBorder(new Color { Auto = true }) { Style = BorderStyleValues.Thin }));
+        }
+
+        if (spec.Unlocked)
+        {
+            dxf.Append(new Protection { Locked = false });
+        }
+
+        if (spec.AddUnknownAttribute)
+        {
+            dxf.SetAttribute(new OpenXmlAttribute("ebt", "unknown", "urn:fictional:test", "1"));
+        }
+
+        return dxf;
+    }
+
+    /// <summary>指定された条件付き書式を組み立てる。属性は指定されたものだけ書く。</summary>
+    private static ConditionalFormatting BuildConditionalFormatting(TestConditionalFormatting spec)
+    {
+        var element = new ConditionalFormatting
+        {
+            SequenceOfReferences = new ListValue<StringValue> { InnerText = spec.Sqref },
+        };
+
+        if (spec.Pivot)
+        {
+            element.Pivot = true;
+        }
+
+        if (spec.AddUnknownAttribute)
+        {
+            element.SetAttribute(new OpenXmlAttribute("ebt", "unknown", "urn:fictional:test", "1"));
+        }
+
+        foreach (var rule in spec.Rules)
+        {
+            element.Append(BuildConditionalFormattingRule(rule));
+        }
+
+        if (spec.AddUnknownChild)
+        {
+            element.Append(new ExtensionList());
+        }
+
+        return element;
+    }
+
+    private static ConditionalFormattingRule BuildConditionalFormattingRule(TestConditionalFormattingRule spec)
+    {
+        var rule = new ConditionalFormattingRule();
+
+        // 未知の type も作れるよう、列挙値ではなく属性として直接設定する。
+        rule.SetAttribute(new OpenXmlAttribute(string.Empty, "type", string.Empty, spec.Type));
+
+        if (spec.Priority is { } priority)
+        {
+            rule.Priority = priority;
+        }
+
+        if (spec.DxfId is { } dxfId)
+        {
+            rule.FormatId = dxfId;
+        }
+
+        if (spec.StopIfTrue is { } stopIfTrue)
+        {
+            rule.StopIfTrue = stopIfTrue;
+        }
+
+        if (spec.Rank is { } rank)
+        {
+            rule.Rank = rank;
+        }
+
+        if (spec.Percent is { } percent)
+        {
+            rule.Percent = percent;
+        }
+
+        if (spec.Bottom is { } bottom)
+        {
+            rule.Bottom = bottom;
+        }
+
+        if (spec.AboveAverage is { } aboveAverage)
+        {
+            rule.AboveAverage = aboveAverage;
+        }
+
+        if (spec.EqualAverage is { } equalAverage)
+        {
+            rule.EqualAverage = equalAverage;
+        }
+
+        if (spec.StdDev is { } stdDev)
+        {
+            rule.StdDev = stdDev;
+        }
+
+        if (spec.Operator is { } op)
+        {
+            rule.Operator = new EnumValue<ConditionalFormattingOperatorValues>(
+                new ConditionalFormattingOperatorValues(op));
+        }
+
+        if (spec.Text is { } text)
+        {
+            rule.Text = text;
+        }
+
+        if (spec.TimePeriod is { } timePeriod)
+        {
+            rule.TimePeriod = new EnumValue<TimePeriodValues>(new TimePeriodValues(timePeriod));
+        }
+
+        if (spec.AddUnknownAttribute)
+        {
+            rule.SetAttribute(new OpenXmlAttribute("ebt", "unknown", "urn:fictional:test", "1"));
+        }
+
+        if (spec.Formula is { } formula)
+        {
+            rule.Append(new Formula(formula));
+        }
+
+        return rule;
     }
 
     private static string Reference(int column, uint row) => $"{Letters(column)}{row}";

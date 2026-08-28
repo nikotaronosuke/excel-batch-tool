@@ -20,6 +20,14 @@ internal sealed class OutputStylesheetBuilder
     private readonly List<NumberingFormat> _numberingFormats = [];
     private readonly Dictionary<string, uint[]> _mapsBySource = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 条件付き書式が使う書式(dxf)。セル書式(CellFormats)とは別の索引体系なので
+    /// 対応表も別に持つ。Source ごとに「元の dxf 位置 → 出力の dxf 位置」を覚える。
+    /// </summary>
+    private readonly List<DifferentialFormat> _differentialFormats = [];
+
+    private readonly Dictionary<(string Source, uint Index), uint> _differentialFormatMap = [];
+
     private uint _nextCustomNumberFormatId = FirstCustomNumberFormatId;
 
     public OutputStylesheetBuilder()
@@ -103,6 +111,38 @@ internal sealed class OutputStylesheetBuilder
     public static uint MapStyleIndex(uint[] map, uint? sourceStyleIndex)
         => sourceStyleIndex is { } index && index < map.Length ? map[index] : 0U;
 
+    /// <summary>
+    /// 条件付き書式が使う書式(dxf)を出力へ取り込み、出力での位置を返す。
+    /// 同じ Source の同じ位置なら 1 つにまとめる。参照されている書式だけを取り込む。
+    /// </summary>
+    public uint AddDifferentialFormat(string sourceKey, uint sourceIndex, DifferentialFormat format)
+    {
+        var key = (sourceKey.ToLowerInvariant(), sourceIndex);
+        if (_differentialFormatMap.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        var copy = (DifferentialFormat)format.CloneNode(true);
+
+        // dxf の numFmt は formatCode を自分で持つが、ID がブックの numFmts と
+        // 食い違うと表示形式の解釈が割れる。ユーザー定義 ID は採番し直し、
+        // 同じ内容を numFmts にも登録して、どちらを見ても同じ書式になるようにする。
+        if (copy.NumberingFormat is { } numberFormat
+            && numberFormat.FormatCode?.Value is { } code
+            && (numberFormat.NumberFormatId?.Value ?? 0U) >= FirstCustomNumberFormatId)
+        {
+            var newId = _nextCustomNumberFormatId++;
+            numberFormat.NumberFormatId = newId;
+            _numberingFormats.Add(new NumberingFormat { NumberFormatId = newId, FormatCode = code });
+        }
+
+        var outputIndex = (uint)_differentialFormats.Count;
+        _differentialFormats.Add(copy);
+        _differentialFormatMap[key] = outputIndex;
+        return outputIndex;
+    }
+
     public Stylesheet Build()
     {
         var stylesheet = new Stylesheet();
@@ -135,6 +175,16 @@ internal sealed class OutputStylesheetBuilder
         {
             Count = 1U,
         };
+
+        // 条件付き書式が無いブックには dxfs を作らない。count は実際の件数で書き直す。
+        if (_differentialFormats.Count > 0)
+        {
+            stylesheet.DifferentialFormats = new DifferentialFormats(
+                _differentialFormats.Select(format => format.CloneNode(true)))
+            {
+                Count = (uint)_differentialFormats.Count,
+            };
+        }
 
         return stylesheet;
     }

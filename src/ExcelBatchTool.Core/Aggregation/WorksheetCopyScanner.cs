@@ -82,6 +82,10 @@ internal sealed class SheetCopyScan
     /// <summary>Office 2010 以降の拡張リスト入力規則(x14)。</summary>
     public IReadOnlyList<X14ListValidationInfo> X14ListValidations { get; init; }
         = Array.Empty<X14ListValidationInfo>();
+
+    /// <summary>条件付き書式(標準形式)。</summary>
+    public IReadOnlyList<ConditionalFormattingInfo> ConditionalFormattings { get; init; }
+        = Array.Empty<ConditionalFormattingInfo>();
 }
 
 /// <summary>解析済みの印刷範囲・印刷タイトル。範囲はシート名を含まない。</summary>
@@ -260,6 +264,8 @@ internal static class WorksheetCopyScanner
         var hyperlinks = new List<HyperlinkInfo>();
         var dataValidations = new List<DataValidationInfo>();
         var x14Validations = new List<X14ListValidationInfo>();
+        var conditionalFormattings = new List<ConditionalFormattingInfo>();
+        var differentialFormats = ConditionalFormattingScanner.ReadDifferentialFormats(workbookPart);
         var definedNameIndex = WorkbookDefinedNameIndex.Create(workbookPart);
         DataValidations? dataValidationContainer = null;
         PageSetupProperties? pageSetupProperties = null;
@@ -353,7 +359,8 @@ internal static class WorksheetCopyScanner
                 }
                 else if (type == typeof(ConditionalFormatting))
                 {
-                    AddOnce(blocks, "条件付き書式を含むため、Phase 1B.1 では集約できません。");
+                    conditionalFormattings.Add(ConditionalFormattingScanner.Scan(
+                        (ConditionalFormatting)reader.LoadCurrentElement()!, differentialFormats));
                 }
                 else if (type == typeof(DataValidations))
                 {
@@ -475,6 +482,19 @@ internal static class WorksheetCopyScanner
             AddOnce(blocks, reason);
         }
 
+        // 条件付き書式も、1 件でも移植できないものがあればシート全体を Block する。
+        foreach (var reason in conditionalFormattings
+            .SelectMany(item => item.Rules.Select(rule => rule.BlockReason).Prepend(item.BlockReason))
+            .OfType<string>())
+        {
+            AddOnce(blocks, reason);
+        }
+
+        if (ConditionalFormattingScanner.FindDuplicatePriority(conditionalFormattings) is { } priorityError)
+        {
+            AddOnce(blocks, priorityError);
+        }
+
         if (HasDuplicateOrOverlappingMerges(mergeReferences))
         {
             blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
@@ -509,6 +529,7 @@ internal static class WorksheetCopyScanner
             DataValidations = dataValidations,
             DataValidationContainer = dataValidationContainer,
             X14ListValidations = x14Validations,
+            ConditionalFormattings = conditionalFormattings,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,
@@ -546,8 +567,15 @@ internal static class WorksheetCopyScanner
 
             if (!isDataValidationExtension || validations.Count == 0)
             {
-                AddOnce(blocks,
-                    "対応していない拡張情報(新しい形式の設定)を含むため、"
+                // 標準形式の条件付き書式だけを写して x14 側を黙って落とすと、
+                // 見た目が変わったことに気づけないので、まとめて Block する。
+                AddOnce(blocks, string.Equals(
+                    extension.Uri?.Value,
+                    ConditionalFormattingScanner.X14ExtensionUri,
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "新しい形式の条件付き書式(データバー等の拡張設定)を含むため、"
+                        + "現在のバージョンでは安全に集約できません。"
+                    : "対応していない拡張情報(新しい形式の設定)を含むため、"
                         + "現在のバージョンでは安全に集約できません。");
                 continue;
             }

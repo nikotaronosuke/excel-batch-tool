@@ -72,6 +72,56 @@ public sealed record OutputDefinedName(string Name, string RefersTo);
 /// <summary>参照元を解決済みの x14 リスト入力規則。</summary>
 public sealed record ResolvedX14ListValidation(string Sqref, string ListSource);
 
+/// <summary>
+/// 出力へ引き継ぐ条件付き書式のルール 1 件の概要(出力後の検証に使う)。
+/// 値が null の項目は「元ファイルに属性が無い」ことを表す。出力にも書かない。
+/// </summary>
+public sealed record ConditionalFormattingRuleSummary
+{
+    /// <summary>ルールの種類(duplicateValues / uniqueValues / top10 / aboveAverage)。</summary>
+    public required string Type { get; init; }
+
+    /// <summary>優先順位。元の値をそのまま使う(振り直さない)。</summary>
+    public required int Priority { get; init; }
+
+    /// <summary>このルールが成立したら以降のルールを評価しない。</summary>
+    public bool? StopIfTrue { get; init; }
+
+    /// <summary>top10: 上位/下位の件数(または割合)。</summary>
+    public uint? Rank { get; init; }
+
+    /// <summary>top10: 件数ではなく割合で指定する。</summary>
+    public bool? Percent { get; init; }
+
+    /// <summary>top10: 上位ではなく下位を対象にする。</summary>
+    public bool? Bottom { get; init; }
+
+    /// <summary>aboveAverage: 平均より上(false なら平均より下)。</summary>
+    public bool? AboveAverage { get; init; }
+
+    /// <summary>aboveAverage: 平均と等しい値も含める。</summary>
+    public bool? EqualAverage { get; init; }
+
+    /// <summary>aboveAverage: 標準偏差いくつ分か。</summary>
+    public int? StandardDeviation { get; init; }
+
+    /// <summary>書式に含まれる項目("font,fill" など)。出力後の照合に使う。</summary>
+    public string FormatChildren { get; init; } = string.Empty;
+
+    /// <summary>書式の表示形式(formatCode)。指定が無ければ null。</summary>
+    public string? FormatNumberCode { get; init; }
+}
+
+/// <summary>出力へ引き継ぐ条件付き書式(1 つの適用範囲とそのルール群)の概要。</summary>
+public sealed record ConditionalFormattingSummary
+{
+    /// <summary>適用範囲(空白区切りの A1 形式)。元の範囲をそのまま使う。</summary>
+    public required string Sqref { get; init; }
+
+    public IReadOnlyList<ConditionalFormattingRuleSummary> Rules { get; init; }
+        = Array.Empty<ConditionalFormattingRuleSummary>();
+}
+
 /// <summary>集約対象 1 件分の計画。</summary>
 public sealed class SheetAggregationPlan
 {
@@ -117,6 +167,10 @@ public sealed class SheetAggregationPlan
     /// <summary>出力へ引き継ぐ x14 リスト入力規則(参照元は解決済み)。</summary>
     public IReadOnlyList<ResolvedX14ListValidation> X14ListValidations { get; init; }
         = Array.Empty<ResolvedX14ListValidation>();
+
+    /// <summary>出力へ引き継ぐ条件付き書式の概要。</summary>
+    public IReadOnlyList<ConditionalFormattingSummary> ConditionalFormattings { get; init; }
+        = Array.Empty<ConditionalFormattingSummary>();
 
     public string SourceDisplay => $"{FileName} / {SheetName}";
 }
