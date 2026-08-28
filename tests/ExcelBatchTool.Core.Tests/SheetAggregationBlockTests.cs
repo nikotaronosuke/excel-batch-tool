@@ -18,7 +18,6 @@ public sealed class SheetAggregationBlockTests
         { "table", "テーブル" },
         { "conditionalFormatting", "条件付き書式" },
         { "dataValidation", "入力規則" },
-        { "hyperlink", "ハイパーリンク" },
         { "autoFilter", "オートフィルター" },
         { "comment", "コメント" },
         { "richText", "リッチテキスト" },

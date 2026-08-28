@@ -33,6 +33,21 @@ internal sealed record TestRowProperty(uint RowIndex, double? Height = null, boo
 
 internal sealed record TestColumnProperty(uint Min, uint Max, double? Width = null, bool Hidden = false);
 
+/// <summary>
+/// テスト用のハイパーリンク指定。
+/// <paramref name="ExternalTarget"/> を指定すると relationship 付きの外部リンク、
+/// <paramref name="Location"/> だけならブック内リンクになる。
+/// </summary>
+internal sealed record TestHyperlink(
+    string Reference,
+    string? ExternalTarget = null,
+    string? Location = null,
+    string? Tooltip = null,
+    string? Display = null,
+    bool ExternalTargetIsRelative = false,
+    bool UseDanglingRelationshipId = false,
+    bool UseInternalRelationship = false);
+
 /// <summary>集約テスト用のシート定義。</summary>
 internal sealed class TestAggregationSheetSpec
 {
@@ -114,6 +129,9 @@ internal sealed class TestAggregationSheetSpec
     public bool AddDataValidation { get; init; }
 
     public bool AddHyperlink { get; init; }
+
+    /// <summary>個別に指定するハイパーリンク。</summary>
+    public TestHyperlink[] Hyperlinks { get; init; } = [];
 
     public bool AddAutoFilter { get; init; }
 
@@ -511,11 +529,59 @@ internal static class TestSheetWorkbookFactory
 
         worksheetPart.Worksheet = worksheet;
 
-        if (spec.AddHyperlink)
+        if (spec.AddHyperlink || spec.Hyperlinks.Length > 0)
         {
-            var relationship = worksheetPart.AddHyperlinkRelationship(
-                new Uri("https://example.invalid/", UriKind.Absolute), isExternal: true);
-            worksheet.Append(new Hyperlinks(new Hyperlink { Reference = "A1", Id = relationship.Id }));
+            var hyperlinks = new Hyperlinks();
+
+            if (spec.AddHyperlink)
+            {
+                var relationship = worksheetPart.AddHyperlinkRelationship(
+                    new Uri("https://example.invalid/", UriKind.Absolute), isExternal: true);
+                hyperlinks.Append(new Hyperlink { Reference = "A1", Id = relationship.Id });
+            }
+
+            foreach (var link in spec.Hyperlinks)
+            {
+                var element = new Hyperlink { Reference = link.Reference };
+
+                if (link.UseDanglingRelationshipId)
+                {
+                    element.Id = "rIdMissing";
+                }
+                else if (link.UseInternalRelationship)
+                {
+                    // 外部ではない relationship を指す(本来ハイパーリンクでは使わない形)。
+                    var relationship = worksheetPart.AddHyperlinkRelationship(
+                        new Uri("sheet-other.xml", UriKind.Relative), isExternal: false);
+                    element.Id = relationship.Id;
+                }
+                else if (link.ExternalTarget is { } target)
+                {
+                    var relationship = worksheetPart.AddHyperlinkRelationship(
+                        new Uri(target, link.ExternalTargetIsRelative ? UriKind.Relative : UriKind.Absolute),
+                        isExternal: true);
+                    element.Id = relationship.Id;
+                }
+
+                if (link.Location is { } location)
+                {
+                    element.Location = location;
+                }
+
+                if (link.Tooltip is { } tooltip)
+                {
+                    element.Tooltip = tooltip;
+                }
+
+                if (link.Display is { } display)
+                {
+                    element.Display = display;
+                }
+
+                hyperlinks.Append(element);
+            }
+
+            worksheet.Append(hyperlinks);
         }
 
         if (spec.AddComment)
