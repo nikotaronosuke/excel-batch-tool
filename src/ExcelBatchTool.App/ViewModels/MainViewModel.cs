@@ -38,12 +38,14 @@ public sealed class MainViewModel : ObservableObject
         Mutation = new CellMutationViewModel(recipes);
         Mapping = new SourceMappingViewModel(pickSourceFile, recipes);
         TableUpdate = new TableUpdateViewModel(pickSourceFile, recipes);
+        CsvTransform = new CsvTransformViewModel(pickSourceFile, recipes);
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
 
         Mutation.Recipes.Reload();
         Mapping.Recipes.Reload();
         TableUpdate.Recipes.Reload();
+        CsvTransform.Recipes.Reload();
     }
 
     public ObservableCollection<WorkbookItemViewModel> Files { get; } = [];
@@ -62,6 +64,9 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>「表を突合して更新」(Phase 2C2)の状態。</summary>
     public TableUpdateViewModel TableUpdate { get; }
+
+    /// <summary>「CSV を変換」(Phase 2E)の状態。</summary>
+    public CsvTransformViewModel CsvTransform { get; }
 
     public RelayCommand SelectFilesCommand { get; }
 

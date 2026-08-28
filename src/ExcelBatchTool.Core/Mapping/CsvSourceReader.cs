@@ -260,6 +260,68 @@ internal static class CsvSourceReader
         };
     }
 
+    /// <summary>
+    /// 項目名の行より後のレコードを順に渡す(CSV 変換で使う)。行は保持しない。
+    /// <paramref name="onRecord"/> が false を返したところで読み終える。
+    /// 読み取れないときは理由を返す。
+    /// </summary>
+    public static string? ReadRecords(
+        string filePath,
+        int columnCount,
+        Func<int, IReadOnlyList<string>, bool> onRecord,
+        CancellationToken cancellationToken)
+    {
+        if (SourceEncoding.Detect(filePath, out var encoding, out _, out var detectError) is false)
+        {
+            return detectError;
+        }
+
+        try
+        {
+            using var parser = CreateParser(filePath, encoding!);
+
+            var recordNumber = 0;
+            while (!parser.EndOfData)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var fields = parser.ReadFields();
+                recordNumber++;
+
+                if (fields is null || recordNumber == 1)
+                {
+                    continue; // ヘッダー。
+                }
+
+                if (fields.Length != columnCount)
+                {
+                    return $"データ元の CSV の {recordNumber} 行目の列数({fields.Length})が"
+                        + $"項目名の行({columnCount})と違います。読み取り位置がずれるため中止します。";
+                }
+
+                if (!onRecord(recordNumber, fields))
+                {
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (MalformedLineException ex)
+        {
+            return $"データ元の CSV を読み取れません({ex.LineNumber} 行目付近)。"
+                + "引用符の対応を確認してください。";
+        }
+        catch (Exception ex)
+        {
+            return $"データ元の CSV を読み取れません: {ex.Message}";
+        }
+
+        return null;
+    }
+
     private static TextFieldParser CreateParser(string filePath, Encoding encoding)
     {
         var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);

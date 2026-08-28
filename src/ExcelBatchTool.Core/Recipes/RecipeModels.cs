@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ExcelBatchTool.Core.CsvTransform;
 using ExcelBatchTool.Core.Mapping;
 using ExcelBatchTool.Core.Mutation;
 
@@ -19,6 +20,9 @@ public enum RecipeType
 
     /// <summary>「6. 表を突合して更新」の設定。</summary>
     SourceTableToTargetTable,
+
+    /// <summary>「7. CSV を変換」の設定。</summary>
+    CsvTransform,
 }
 
 /// <summary>JSON 上の固定文字列と C# 側の型との対応。</summary>
@@ -27,6 +31,7 @@ public static class RecipeJsonNames
     public const string CellInputSet = "cell-input-set";
     public const string SourceToFixedCells = "source-to-fixed-cells";
     public const string SourceTableToTargetTable = "source-table-to-target-table";
+    public const string CsvTransform = "csv-transform";
 
     public const string Text = "text";
     public const string Number = "number";
@@ -35,12 +40,41 @@ public static class RecipeJsonNames
     public const string Xlsx = "xlsx";
     public const string Csv = "csv";
 
+    public const string SourceColumnValue = "source-column";
+    public const string FixedTextValue = "fixed-text";
+    public const string BlankValue = "blank";
+
+    public const string Utf8BomEncoding = "utf-8-bom";
+    public const string Utf8Encoding = "utf-8";
+    public const string ShiftJisEncoding = "shift_jis";
+
+    public const string MinimalQuotes = "minimal";
+    public const string AllQuotes = "all";
+
     public static string Of(RecipeType type) => type switch
     {
         RecipeType.CellInputSet => CellInputSet,
         RecipeType.SourceToFixedCells => SourceToFixedCells,
-        _ => SourceTableToTargetTable,
+        RecipeType.SourceTableToTargetTable => SourceTableToTargetTable,
+        _ => CsvTransform,
     };
+
+    public static string Of(CsvValueSourceKind kind) => kind switch
+    {
+        CsvValueSourceKind.FixedText => FixedTextValue,
+        CsvValueSourceKind.Blank => BlankValue,
+        _ => SourceColumnValue,
+    };
+
+    public static string Of(CsvOutputEncoding encoding) => encoding switch
+    {
+        CsvOutputEncoding.Utf8 => Utf8Encoding,
+        CsvOutputEncoding.ShiftJis => ShiftJisEncoding,
+        _ => Utf8BomEncoding,
+    };
+
+    public static string Of(CsvQuoteMode mode)
+        => mode == CsvQuoteMode.All ? AllQuotes : MinimalQuotes;
 
     public static string Of(CellWriteKind kind) => kind switch
     {
@@ -72,6 +106,7 @@ internal sealed class RecipeTypeConverter : JsonConverter<RecipeType>
             RecipeJsonNames.CellInputSet => RecipeType.CellInputSet,
             RecipeJsonNames.SourceToFixedCells => RecipeType.SourceToFixedCells,
             RecipeJsonNames.SourceTableToTargetTable => RecipeType.SourceTableToTargetTable,
+            RecipeJsonNames.CsvTransform => RecipeType.CsvTransform,
             var other => throw new JsonException($"未知の処理の種類です: {other}"),
         };
 
@@ -108,6 +143,92 @@ internal sealed class SourceFileKindConverter : JsonConverter<SourceFileKind>
 
     public override void Write(Utf8JsonWriter writer, SourceFileKind value, JsonSerializerOptions options)
         => writer.WriteStringValue(RecipeJsonNames.Of(value));
+}
+
+/// <summary>出力する列の入れ方を固定文字列として読み書きする。</summary>
+internal sealed class CsvValueSourceKindConverter : JsonConverter<CsvValueSourceKind>
+{
+    public override CsvValueSourceKind Read(
+        ref Utf8JsonReader reader, Type _, JsonSerializerOptions options)
+        => RecipeJsonReader.ReadText(ref reader) switch
+        {
+            RecipeJsonNames.SourceColumnValue => CsvValueSourceKind.SourceColumn,
+            RecipeJsonNames.FixedTextValue => CsvValueSourceKind.FixedText,
+            RecipeJsonNames.BlankValue => CsvValueSourceKind.Blank,
+            var other => throw new JsonException($"未知の項目の入れ方です: {other}"),
+        };
+
+    public override void Write(
+        Utf8JsonWriter writer, CsvValueSourceKind value, JsonSerializerOptions options)
+        => writer.WriteStringValue(RecipeJsonNames.Of(value));
+}
+
+/// <summary>出力の文字コードを固定文字列として読み書きする。</summary>
+internal sealed class CsvOutputEncodingConverter : JsonConverter<CsvOutputEncoding>
+{
+    public override CsvOutputEncoding Read(
+        ref Utf8JsonReader reader, Type _, JsonSerializerOptions options)
+        => RecipeJsonReader.ReadText(ref reader) switch
+        {
+            RecipeJsonNames.Utf8BomEncoding => CsvOutputEncoding.Utf8Bom,
+            RecipeJsonNames.Utf8Encoding => CsvOutputEncoding.Utf8,
+            RecipeJsonNames.ShiftJisEncoding => CsvOutputEncoding.ShiftJis,
+            var other => throw new JsonException($"未知の文字コードです: {other}"),
+        };
+
+    public override void Write(
+        Utf8JsonWriter writer, CsvOutputEncoding value, JsonSerializerOptions options)
+        => writer.WriteStringValue(RecipeJsonNames.Of(value));
+}
+
+/// <summary>引用符の付け方を固定文字列として読み書きする。</summary>
+internal sealed class CsvQuoteModeConverter : JsonConverter<CsvQuoteMode>
+{
+    public override CsvQuoteMode Read(ref Utf8JsonReader reader, Type _, JsonSerializerOptions options)
+        => RecipeJsonReader.ReadText(ref reader) switch
+        {
+            RecipeJsonNames.MinimalQuotes => CsvQuoteMode.Minimal,
+            RecipeJsonNames.AllQuotes => CsvQuoteMode.All,
+            var other => throw new JsonException($"未知の引用符の付け方です: {other}"),
+        };
+
+    public override void Write(Utf8JsonWriter writer, CsvQuoteMode value, JsonSerializerOptions options)
+        => writer.WriteStringValue(RecipeJsonNames.Of(value));
+}
+
+/// <summary>「7. CSV を変換」で保存する出力列 1 件。</summary>
+public sealed record RecipeCsvColumn
+{
+    public string OutputName { get; init; } = string.Empty;
+
+    public CsvValueSourceKind ValueSourceKind { get; init; }
+
+    /// <summary>データ元から取るときの項目名。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceColumn { get; init; }
+
+    /// <summary>固定値のときに全行へ入れる文字。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FixedValue { get; init; }
+}
+
+/// <summary>「7. CSV を変換」の設定。データ元のファイルは含まない。</summary>
+public sealed record CsvTransformRecipe
+{
+    public SourceFileKind SourceFileKind { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourceSheetName { get; init; }
+
+    public int HeaderRow { get; init; } = 1;
+
+    public IReadOnlyList<RecipeCsvColumn> OutputColumns { get; init; } = [];
+
+    public CsvOutputEncoding Encoding { get; init; }
+
+    public CsvQuoteMode QuoteMode { get; init; }
+
+    public string OutputSuffix { get; init; } = string.Empty;
 }
 
 /// <summary>「4. セルをまとめて変更」で保存する 1 行。</summary>
@@ -221,6 +342,9 @@ public sealed record SavedRecipe
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SourceTableToTargetTableRecipe? SourceTableToTargetTable { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CsvTransformRecipe? CsvTransform { get; init; }
 }
 
 /// <summary>レシピファイル全体。</summary>
