@@ -72,6 +72,12 @@ internal sealed class SheetCopyScan
 
     /// <summary>ハイパーリンク。別シート宛の解決は Planner が行う。</summary>
     public IReadOnlyList<HyperlinkInfo> Hyperlinks { get; init; } = Array.Empty<HyperlinkInfo>();
+
+    /// <summary>入力規則。1 件でも移植できないものがあればシート全体を Block する。</summary>
+    public IReadOnlyList<DataValidationInfo> DataValidations { get; init; } = Array.Empty<DataValidationInfo>();
+
+    /// <summary>入力規則のコンテナ(子要素なし)。count は出力時に振り直す。</summary>
+    public DataValidations? DataValidationContainer { get; init; }
 }
 
 /// <summary>解析済みの印刷範囲・印刷タイトル。範囲はシート名を含まない。</summary>
@@ -248,6 +254,8 @@ internal static class WorksheetCopyScanner
         var mergeReferences = new List<string>();
 
         var hyperlinks = new List<HyperlinkInfo>();
+        var dataValidations = new List<DataValidationInfo>();
+        DataValidations? dataValidationContainer = null;
         PageSetupProperties? pageSetupProperties = null;
         PrintOptions? printOptions = null;
         PageMargins? pageMargins = null;
@@ -269,6 +277,15 @@ internal static class WorksheetCopyScanner
 
                 if (!reader.IsStartElement)
                 {
+                    continue;
+                }
+
+                // Office 2010 以降の拡張入力規則(x14)は構造が異なるため、
+                // 標準形式と一緒に扱わず、存在を検出して Block する。
+                if (string.Equals(reader.NamespaceUri, DataValidationScanner.X14Namespace, StringComparison.Ordinal)
+                    && reader.LocalName is "dataValidations" or "dataValidation")
+                {
+                    AddOnce(blocks, "新しい形式の入力規則を含むため、現在のバージョンでは安全に集約できません。");
                     continue;
                 }
 
@@ -331,9 +348,21 @@ internal static class WorksheetCopyScanner
                 {
                     AddOnce(blocks, "条件付き書式を含むため、Phase 1B.1 では集約できません。");
                 }
-                else if (type == typeof(DataValidation) || type == typeof(DataValidations))
+                else if (type == typeof(DataValidations))
                 {
-                    AddOnce(blocks, "データの入力規則を含むため、Phase 1B.1 では集約できません。");
+                    var container = (DataValidations)reader.LoadCurrentElement()!;
+                    if (container.ExtendedAttributes.Any())
+                    {
+                        AddOnce(blocks, "対応していない設定を含む入力規則があります。");
+                    }
+                    else
+                    {
+                        dataValidationContainer = (DataValidations)container.CloneNode(false);
+                        foreach (var validation in container.Elements<DataValidation>())
+                        {
+                            dataValidations.Add(DataValidationScanner.Scan(validation, context.IsDate1904));
+                        }
+                    }
                 }
                 else if (type == typeof(Hyperlink))
                 {
@@ -427,6 +456,12 @@ internal static class WorksheetCopyScanner
             AddOnce(warnings, "ふりがな(phonetic)情報は引き継がれません。");
         }
 
+        // 1 件でも移植できない入力規則があれば、部分的にコピーせずシート全体を Block する。
+        foreach (var reason in dataValidations.Select(item => item.BlockReason).OfType<string>())
+        {
+            AddOnce(blocks, reason);
+        }
+
         if (HasDuplicateOrOverlappingMerges(mergeReferences))
         {
             blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
@@ -458,6 +493,8 @@ internal static class WorksheetCopyScanner
             ColumnBreaks = columnBreaks,
             PrintDefinedNames = printDefinedNames,
             Hyperlinks = hyperlinks,
+            DataValidations = dataValidations,
+            DataValidationContainer = dataValidationContainer,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,

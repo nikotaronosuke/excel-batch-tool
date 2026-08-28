@@ -96,6 +96,7 @@ public sealed class SheetAggregationPlanner
             var visibility = SheetVisibility.Visible;
             var printLayout = new PrintLayoutSummary();
             IReadOnlyList<ResolvedHyperlink> hyperlinks = Array.Empty<ResolvedHyperlink>();
+            IReadOnlyList<DataValidationSummary> dataValidations = Array.Empty<DataValidationSummary>();
 
             if (!sheetBlocked)
             {
@@ -106,6 +107,7 @@ public sealed class SheetAggregationPlanner
 
                 hyperlinks = ResolveHyperlinks(
                     scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
+                dataValidations = SummarizeDataValidations(scan);
 
                 foreach (var reason in scan.BlockReasons)
                 {
@@ -146,6 +148,7 @@ public sealed class SheetAggregationPlanner
                 Visibility = visibility,
                 PrintLayout = printLayout,
                 Hyperlinks = hyperlinks,
+                DataValidations = dataValidations,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });
@@ -227,6 +230,17 @@ public sealed class SheetAggregationPlanner
 
         return resolved;
     }
+
+    /// <summary>出力後の検証で照合するため、移植する入力規則の概要を控える。</summary>
+    private static List<DataValidationSummary> SummarizeDataValidations(SheetCopyScan scan)
+        => [.. scan.DataValidations
+            .Select(item => item.Element)
+            .OfType<DataValidation>()
+            .Select(element => new DataValidationSummary(
+                element.SequenceOfReferences?.InnerText ?? string.Empty,
+                element.Type?.InnerText ?? "none",
+                element.Formula1?.Text,
+                element.Formula2?.Text))];
 
     private static string NormalizePath(string filePath)
     {

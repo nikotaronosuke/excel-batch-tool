@@ -329,7 +329,12 @@ public sealed class SheetAggregator
             });
         }
 
-        // hyperlinks は mergeCells より後、printOptions より前。
+        // CT_Worksheet では dataValidations → hyperlinks → printOptions の順。
+        if (BuildDataValidations(scan) is { } dataValidations)
+        {
+            writer.WriteElement(dataValidations);
+        }
+
         if (hyperlinks is not null)
         {
             writer.WriteElement(hyperlinks);
@@ -367,6 +372,35 @@ public sealed class SheetAggregator
         }
 
         writer.WriteEndElement();
+    }
+
+    /// <summary>
+    /// 入力規則を出力用に組み立てる。要素は走査時に検証済みのものをそのまま使い、
+    /// count だけ実際の件数へ振り直す(元の count を鵜呑みにしない)。
+    /// </summary>
+    private static DataValidations? BuildDataValidations(SheetCopyScan scan)
+    {
+        var elements = scan.DataValidations
+            .Select(item => item.Element)
+            .OfType<DataValidation>()
+            .ToList();
+
+        if (elements.Count == 0)
+        {
+            return null;
+        }
+
+        var container = scan.DataValidationContainer is { } source
+            ? (DataValidations)source.CloneNode(false)
+            : new DataValidations();
+
+        foreach (var element in elements)
+        {
+            container.Append((DataValidation)element.CloneNode(true));
+        }
+
+        container.Count = (uint)elements.Count;
+        return container;
     }
 
     /// <summary>改ページ定義を写し、count / manualBreakCount を実際の内容に合わせ直す。</summary>
@@ -614,6 +648,11 @@ public sealed class SheetAggregator
                 {
                     return hyperlinkError;
                 }
+
+                if (CheckDataValidations(worksheetPart, expected) is { } validationError)
+                {
+                    return validationError;
+                }
             }
 
             var validationErrors = new OpenXmlValidator().Validate(document).ToList();
@@ -705,6 +744,57 @@ public sealed class SheetAggregator
     }
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+    /// <summary>入力規則が想定どおり出力され、件数(count)も一致するか確かめる。</summary>
+    private static string? CheckDataValidations(WorksheetPart worksheetPart, SheetAggregationPlan expected)
+    {
+        var container = worksheetPart.Worksheet?.GetFirstChild<DataValidations>();
+        var written = container?.Elements<DataValidation>().ToList() ?? [];
+
+        if (written.Count != expected.DataValidations.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」の入力規則の数が想定と異なります"
+                + $"(想定 {expected.DataValidations.Count} / 実際 {written.Count})。";
+        }
+
+        if (written.Count == 0)
+        {
+            return null;
+        }
+
+        if (container!.Count?.Value != (uint)written.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」の入力規則の件数表記が実際と一致しません"
+                + $"(表記 {container.Count?.Value} / 実際 {written.Count})。";
+        }
+
+        for (var index = 0; index < written.Count; index++)
+        {
+            var actual = written[index];
+            var wanted = expected.DataValidations[index];
+
+            if (!string.Equals(actual.SequenceOfReferences?.InnerText, wanted.Sqref, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の入力規則の適用範囲が想定と異なります"
+                    + $"(想定「{wanted.Sqref}」/ 実際「{actual.SequenceOfReferences?.InnerText}」)。";
+            }
+
+            if (!string.Equals(actual.Type?.InnerText ?? "none", wanted.Type, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の {wanted.Sqref} の入力規則の種類が想定と異なります。";
+            }
+
+            if (!string.Equals(actual.Formula1?.Text, wanted.Formula1, StringComparison.Ordinal)
+                || !string.Equals(actual.Formula2?.Text, wanted.Formula2, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の {wanted.Sqref} の入力規則の条件が想定と異なります"
+                    + $"(想定「{wanted.Formula1}」/「{wanted.Formula2}」"
+                    + $"/ 実際「{actual.Formula1?.Text}」/「{actual.Formula2?.Text}」)。";
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>印刷・ページレイアウト情報が想定どおり出力されているか確かめる。</summary>
     private static string? CheckPrintLayout(WorksheetPart worksheetPart, SheetAggregationPlan expected)

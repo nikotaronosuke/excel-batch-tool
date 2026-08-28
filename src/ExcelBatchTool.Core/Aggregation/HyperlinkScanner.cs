@@ -60,7 +60,7 @@ internal static class HyperlinkScanner
             return Blocked("(位置不明)", "リンクの位置が指定されていません。");
         }
 
-        if (!CellRangeParser.TryParseRange(reference, out _))
+        if (!A1RangeValidator.IsValidRange(reference))
         {
             return Blocked(reference, $"リンクの位置「{reference}」を解釈できません。");
         }
@@ -208,24 +208,8 @@ internal static class HyperlinkScanner
         };
     }
 
-    /// <summary>Excel のワークシートの上限(XFD 列 / 1,048,576 行)。</summary>
-    private const int MaxColumn = 16_384;
-
-    private const int MaxRow = 1_048_576;
-
-    /// <summary>A1 / A1:B5 形式か($ 付きも許容)。範囲の解釈は CellRangeParser を使う。</summary>
-    private static bool IsCellReference(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return false;
-        }
-
-        var normalized = text.Replace("$", string.Empty, StringComparison.Ordinal);
-        return CellRangeParser.TryParseRange(normalized, out var range)
-            && range.LastColumn <= MaxColumn
-            && range.LastRow <= MaxRow;
-    }
+    /// <summary>A1 / A1:B5 形式で、シートの上限内か($ 付きも許容)。</summary>
+    private static bool IsCellReference(string text) => A1RangeValidator.IsValidRange(text);
 
     private static HyperlinkInfo Blocked(string reference, string reason) => new()
     {

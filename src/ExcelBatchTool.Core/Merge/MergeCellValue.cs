@@ -75,4 +75,14 @@ public readonly record struct MergeCellValue
 
     /// <summary>DateTime を 1900 date system の serial 値へ変換する。</summary>
     public static double DateTimeToSerial(DateTime value) => value.ToOADate();
+
+    /// <summary>1904 date system と 1900 date system の serial 値の差。</summary>
+    private const double Date1904Offset = 1462;
+
+    /// <summary>
+    /// Workbook の date system に応じて、serial 値を 1900 date system へそろえる。
+    /// 同じ日付を指したまま出力できるようにするための唯一の変換点。
+    /// </summary>
+    public static double NormalizeSerialTo1900(double serial, bool sourceIsDate1904)
+        => sourceIsDate1904 ? serial + Date1904Offset : serial;
 }
