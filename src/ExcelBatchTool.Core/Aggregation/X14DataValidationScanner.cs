@@ -55,10 +55,12 @@ internal static class X14DataValidationScanner
                     + "現在のバージョンでは安全に集約できません。");
         }
 
-        // xr:uid 以外の想定外の属性・子要素は意味を保証できない。
+        // 想定外の属性・子要素は意味を保証できない。
+        // 入力で例外的に許すのは既知の xr:uid だけで、同じ名前空間でも
+        // 名前が違うもの(xr:foo など)は許さない。出力へは持ち込まない。
         foreach (var attribute in validation.ExtendedAttributes)
         {
-            if (!string.Equals(attribute.NamespaceUri, RevisionNamespace, StringComparison.Ordinal))
+            if (!IsKnownRevisionUid(attribute))
             {
                 return Blocked(sqref, $"セル {sqref} の入力規則に対応していない設定が含まれています。");
             }
@@ -133,6 +135,14 @@ internal static class X14DataValidationScanner
 
         return Blocked(sqref, ListSourceParser.Describe(problem, $"セル {sqref} の入力規則の参照元", source));
     }
+
+    /// <summary>
+    /// 既知の xr:uid(リビジョン識別子)かどうか。名前空間が同じでも
+    /// 名前が違う属性は「未知」として扱う。
+    /// </summary>
+    private static bool IsKnownRevisionUid(OpenXmlAttribute attribute)
+        => string.Equals(attribute.NamespaceUri, RevisionNamespace, StringComparison.Ordinal)
+            && string.Equals(attribute.LocalName, "uid", StringComparison.Ordinal);
 
     /// <summary>名前定義として引けそうな形か(関数・演算子・参照記号を含まない)。</summary>
     public static bool LooksLikeName(string text)

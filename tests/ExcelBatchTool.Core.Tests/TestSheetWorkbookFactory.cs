@@ -75,7 +75,8 @@ internal sealed record TestX14Validation(
     string? Operator = null,
     string? RevisionUid = null,
     bool AddUnknownChild = false,
-    bool AddUnknownAttribute = false);
+    bool AddUnknownAttribute = false,
+    bool AddUnknownRevisionAttribute = false);
 
 /// <summary>テスト用のブック全体の名前定義。</summary>
 internal sealed record TestDefinedName(
@@ -829,6 +830,13 @@ internal static class TestSheetWorkbookFactory
         {
             validation.SetAttribute(new OpenXmlAttribute(
                 "xr", "uid", "http://schemas.microsoft.com/office/spreadsheetml/2014/revision", uid));
+        }
+
+        if (spec.AddUnknownRevisionAttribute)
+        {
+            // xr 名前空間だが uid ではない属性(名前空間だけで許可していないことの確認用)。
+            validation.SetAttribute(new OpenXmlAttribute(
+                "xr", "foo", "http://schemas.microsoft.com/office/spreadsheetml/2014/revision", "1"));
         }
 
         if (spec.AddUnknownAttribute)
