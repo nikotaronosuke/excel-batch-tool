@@ -27,8 +27,12 @@ internal static class CsvTransformAuditLog
         Encoder = JavaScriptEncoder.Create(UnicodeRanges.All),
     };
 
+    /// <summary>
+    /// 開いてある作業用ファイルへ書く。呼び出し側が新規作成したストリームだけを受け取り、
+    /// ここでパスを開き直さない(実行前からあったファイルを上書きしないため)。
+    /// </summary>
     public static void Write(
-        string path,
+        Stream stream,
         CsvTransformPreview preview,
         CsvTransformRequest request,
         SourceSnapshot snapshot,
@@ -72,7 +76,7 @@ internal static class CsvTransformAuditLog
             })],
         };
 
-        File.WriteAllText(path, JsonSerializer.Serialize(document, Options));
+        JsonSerializer.Serialize(stream, document, Options);
     }
 
     internal static string EncodingName(CsvOutputEncoding encoding) => encoding switch
