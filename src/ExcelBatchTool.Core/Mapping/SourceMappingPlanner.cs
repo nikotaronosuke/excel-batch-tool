@@ -473,7 +473,8 @@ public sealed class SourceMappingPlanner
                 var mapping = setup.Mappings[index];
                 var value = row.Values[index];
 
-                if (!TryConvert(value, mapping, setup.Kind, out var newValue, out var reason))
+                if (!SourceValueConversion.TryConvert(
+                    value, mapping.WriteKind, setup.Kind, out var newValue, out var reason))
                 {
                     issues.Add(new MergeIssue(
                         MergeIssueSeverity.Block,
@@ -495,64 +496,6 @@ public sealed class SourceMappingPlanner
         }
 
         return mutations;
-    }
-
-    /// <summary>データ元の値を、転記先へ書く値へ変換する。推測での型変換はしない。</summary>
-    private static bool TryConvert(
-        SourceValue value,
-        ResolvedMapping mapping,
-        SourceFileKind kind,
-        out NewCellValue newValue,
-        out string? reason)
-    {
-        newValue = default;
-        reason = null;
-
-        if (value.Kind == SourceValueKind.Unsupported)
-        {
-            reason = $"は{value.Reason}。";
-            return false;
-        }
-
-        if (value.IsBlank)
-        {
-            reason = "が空欄です。現在のバージョンでは、空欄を転記してセルを消すことはしません。";
-            return false;
-        }
-
-        if (mapping.WriteKind == CellWriteKind.Text)
-        {
-            if (value.Kind != SourceValueKind.Text)
-            {
-                reason = "は数値です。文字として転記するには、データ元を文字列にしてください。";
-                return false;
-            }
-
-            newValue = NewCellValue.OfText(value.Text!);
-            return true;
-        }
-
-        if (value.Kind == SourceValueKind.Number)
-        {
-            newValue = NewCellValue.OfNumber(value.Number);
-            return true;
-        }
-
-        // CSV は値がすべて文字列なので、数値として読めるかここで確かめる。
-        if (kind == SourceFileKind.Csv
-            && double.TryParse(
-                value.Text, NumberStyles.Float | NumberStyles.AllowThousands,
-                CultureInfo.InvariantCulture, out var number)
-            && double.IsFinite(number))
-        {
-            newValue = NewCellValue.OfNumber(number);
-            return true;
-        }
-
-        reason = kind == SourceFileKind.Csv
-            ? $"「{value.Text}」を数値として読み取れません。"
-            : "は文字列です。数値として転記するには、データ元を数値にしてください。";
-        return false;
     }
 
     /// <summary>解釈済みの指定内容。</summary>

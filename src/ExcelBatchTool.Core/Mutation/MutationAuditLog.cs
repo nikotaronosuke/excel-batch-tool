@@ -18,9 +18,14 @@ internal static class MutationAuditLog
     /// <summary>データ元から転記したときの控えの版(データ元と行の情報が増える)。</summary>
     public const int MappingSchemaVersion = 2;
 
+    /// <summary>表同士の突合更新の控えの版(転記先の表と行の情報が増える)。</summary>
+    public const int TableUpdateSchemaVersion = 3;
+
     public const string OperationName = "set-cell-value";
 
     public const string MappingOperationName = "map-source-to-cells";
+
+    public const string TableUpdateOperationName = "map-source-table-to-target-table";
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -36,17 +41,25 @@ internal static class MutationAuditLog
         IReadOnlyList<AppliedChange> applied,
         string outputSha256)
     {
+        var isTableUpdate = file.TargetTable is not null;
         var isMapping = file.DataSource is not null;
 
         var document = new AuditDocument
         {
-            SchemaVersion = isMapping ? MappingSchemaVersion : SchemaVersion,
+            SchemaVersion = isTableUpdate ? TableUpdateSchemaVersion
+                : isMapping ? MappingSchemaVersion
+                : SchemaVersion,
             CreatedAt = DateTimeOffset.Now.ToString("o"),
             SourceFileName = file.FileName,
             OutputFileName = file.OutputFileName,
             SourceSha256 = file.Snapshot.Sha256,
             OutputSha256 = outputSha256,
-            Operation = isMapping ? MappingOperationName : OperationName,
+            Operation = isTableUpdate ? TableUpdateOperationName
+                : isMapping ? MappingOperationName
+                : OperationName,
+            TargetTable = file.TargetTable is { } table
+                ? new AuditTargetTable { HeaderRow = table.HeaderRow, KeyColumn = table.KeyColumn }
+                : null,
             DataSource = file.DataSource is { } source
                 ? new AuditDataSource
                 {
@@ -67,8 +80,10 @@ internal static class MutationAuditLog
                 NewValue = item.Change.NewValueDisplay,
                 NewType = item.Change.NewTypeName,
                 SourceColumn = item.Change.Provenance?.SourceColumn,
+                TargetColumn = item.Change.Provenance?.TargetColumn,
                 Key = item.Change.Provenance?.Key,
                 SourceRowNumber = item.Change.Provenance?.SourceRowNumber,
+                TargetRowNumber = item.Change.Provenance?.TargetRowNumber,
             })],
         };
 
@@ -95,6 +110,10 @@ internal static class MutationAuditLog
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public AuditDataSource? DataSource { get; init; }
 
+        /// <summary>表同士の突合更新の場合のみ。</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public AuditTargetTable? TargetTable { get; init; }
+
         public IReadOnlyList<AuditChange> Changes { get; init; } = Array.Empty<AuditChange>();
     }
 
@@ -110,6 +129,14 @@ internal static class MutationAuditLog
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? SheetName { get; init; }
 
+        public int HeaderRow { get; init; }
+
+        public string KeyColumn { get; init; } = string.Empty;
+    }
+
+    /// <summary>転記先の表の読み方。</summary>
+    internal sealed class AuditTargetTable
+    {
         public int HeaderRow { get; init; }
 
         public string KeyColumn { get; init; } = string.Empty;
@@ -133,6 +160,10 @@ internal static class MutationAuditLog
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? SourceColumn { get; init; }
 
+        /// <summary>表同士の突合更新の場合のみ: 転記先のどの項目を更新したか。</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? TargetColumn { get; init; }
+
         /// <summary>転記の場合のみ: 照合に使ったキー。</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? Key { get; init; }
@@ -140,5 +171,9 @@ internal static class MutationAuditLog
         /// <summary>転記の場合のみ: データ元の行番号(CSV はレコード番号)。</summary>
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? SourceRowNumber { get; init; }
+
+        /// <summary>表同士の突合更新の場合のみ: 転記先の行番号。</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? TargetRowNumber { get; init; }
     }
 }

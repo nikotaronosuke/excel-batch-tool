@@ -307,35 +307,49 @@ public sealed class CellMutator
                 return "Workbook 情報がありません。";
             }
 
-            foreach (var (change, styleIndex) in applied)
+            // シートごとに 1 回の走査で対象セルをまとめて引けるようにする。
+            // 変更ごとに Descendants を探し直すと、大きな表では二次時間になる。
+            foreach (var group in applied.GroupBy(item => item.Change.SheetName, StringComparer.Ordinal))
             {
                 var sheet = workbookPart.Workbook?.Sheets?.Elements<Sheet>()
                     .FirstOrDefault(item =>
-                        string.Equals(item.Name?.Value, change.SheetName, StringComparison.Ordinal));
+                        string.Equals(item.Name?.Value, group.Key, StringComparison.Ordinal));
 
                 if (sheet?.Id?.Value is not { } relationshipId
                     || workbookPart.GetPartById(relationshipId) is not WorksheetPart worksheetPart)
                 {
-                    return $"シート「{change.SheetName}」がありません。";
+                    return $"シート「{group.Key}」がありません。";
                 }
 
-                var cell = worksheetPart.Worksheet?.Descendants<Cell>().FirstOrDefault(item =>
-                    string.Equals(
-                        item.CellReference?.Value, change.CellReference, StringComparison.OrdinalIgnoreCase));
+                var wanted = new HashSet<string>(
+                    group.Select(item => item.Change.CellReference), StringComparer.OrdinalIgnoreCase);
+                var found = new Dictionary<string, Cell>(StringComparer.OrdinalIgnoreCase);
 
-                if (cell is null)
+                foreach (var cell in worksheetPart.Worksheet?.Descendants<Cell>() ?? [])
                 {
-                    return $"シート「{change.SheetName}」の {change.CellReference} がありません。";
+                    if (cell.CellReference?.Value is { } reference && wanted.Contains(reference))
+                    {
+                        found[reference] = cell;
+                    }
                 }
 
-                if (cell.StyleIndex?.Value != styleIndex)
+                foreach (var (change, styleIndex) in group)
                 {
-                    return $"シート「{change.SheetName}」の {change.CellReference} の書式が変わっています。";
-                }
+                    var cell = found.GetValueOrDefault(change.CellReference);
+                    if (cell is null)
+                    {
+                        return $"シート「{change.SheetName}」の {change.CellReference} がありません。";
+                    }
 
-                if (CheckValue(cell, change.NewValue) is { } valueError)
-                {
-                    return $"シート「{change.SheetName}」の {change.CellReference}: {valueError}";
+                    if (cell.StyleIndex?.Value != styleIndex)
+                    {
+                        return $"シート「{change.SheetName}」の {change.CellReference} の書式が変わっています。";
+                    }
+
+                    if (CheckValue(cell, change.NewValue) is { } valueError)
+                    {
+                        return $"シート「{change.SheetName}」の {change.CellReference}: {valueError}";
+                    }
                 }
             }
 
