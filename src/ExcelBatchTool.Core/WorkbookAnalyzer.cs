@@ -279,6 +279,12 @@ public static class WorkbookAnalyzer
                 {
                     conditionalFormattingCount++;
                 }
+                else if (reader.LocalName == "conditionalFormatting"
+                    && string.Equals(reader.NamespaceUri, X14Namespace, StringComparison.Ordinal))
+                {
+                    // Office 2010 以降の拡張形式。標準形式と同じ「条件付き書式あり」として見せる。
+                    conditionalFormattingCount++;
+                }
                 else if (elementType == typeof(Hyperlink))
                 {
                     hyperlinkCount++;

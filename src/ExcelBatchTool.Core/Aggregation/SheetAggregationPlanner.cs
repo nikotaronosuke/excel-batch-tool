@@ -101,6 +101,8 @@ public sealed class SheetAggregationPlanner
             IReadOnlyList<ResolvedHyperlink> hyperlinks = Array.Empty<ResolvedHyperlink>();
             IReadOnlyList<DataValidationSummary> dataValidations = Array.Empty<DataValidationSummary>();
             IReadOnlyList<ResolvedX14ListValidation> x14Validations = Array.Empty<ResolvedX14ListValidation>();
+            IReadOnlyList<ConditionalFormattingSummary> conditionalFormattings
+                = Array.Empty<ConditionalFormattingSummary>();
 
             if (!sheetBlocked)
             {
@@ -112,6 +114,7 @@ public sealed class SheetAggregationPlanner
                 hyperlinks = ResolveHyperlinks(
                     scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
                 dataValidations = SummarizeDataValidations(scan);
+                conditionalFormattings = SummarizeConditionalFormattings(scan);
                 x14Validations = ResolveX14ListValidations(
                     scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
                 CollectDefinedNames(
@@ -159,6 +162,7 @@ public sealed class SheetAggregationPlanner
                 Hyperlinks = hyperlinks,
                 DataValidations = dataValidations,
                 X14ListValidations = x14Validations,
+                ConditionalFormattings = conditionalFormattings,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });
@@ -372,6 +376,12 @@ public sealed class SheetAggregationPlanner
                 element.Type?.InnerText ?? "none",
                 element.Formula1?.Text,
                 element.Formula2?.Text))];
+
+    /// <summary>出力後の検証で照合するため、移植する条件付き書式の概要を控える。</summary>
+    private static List<ConditionalFormattingSummary> SummarizeConditionalFormattings(SheetCopyScan scan)
+        => [.. scan.ConditionalFormattings
+            .Where(info => info.BlockReason is null)
+            .Select(ConditionalFormattingScanner.Summarize)];
 
     private static string NormalizePath(string filePath)
     {
