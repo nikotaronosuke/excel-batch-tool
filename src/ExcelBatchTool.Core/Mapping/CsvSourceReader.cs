@@ -167,6 +167,99 @@ internal static class CsvSourceReader
         };
     }
 
+    /// <summary>
+    /// キー列だけを読む(表同士の突合更新の 1 パス目)。
+    /// 値は保持せず、キーの集合・重複・空欄の数だけを集める。
+    /// </summary>
+    public static SourceKeyScan ReadKeys(
+        string filePath,
+        int columnCount,
+        int keyIndex,
+        IReadOnlyList<int> valueIndexes,
+        CancellationToken cancellationToken)
+    {
+        if (SourceEncoding.Detect(filePath, out var encoding, out _, out var detectError) is false)
+        {
+            return SourceKeyScan.Failed(detectError!);
+        }
+
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        var duplicates = new HashSet<string>(StringComparer.Ordinal);
+        var keyedRows = 0;
+        var blankRows = 0;
+        var blankKeyWithValue = 0;
+
+        try
+        {
+            using var parser = CreateParser(filePath, encoding!);
+
+            var recordNumber = 0;
+            while (!parser.EndOfData)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var fields = parser.ReadFields();
+                recordNumber++;
+
+                if (fields is null || recordNumber == 1)
+                {
+                    continue; // ヘッダー。
+                }
+
+                if (fields.Length != columnCount)
+                {
+                    return SourceKeyScan.Failed(
+                        $"データ元の CSV の {recordNumber} 行目の列数({fields.Length})が"
+                            + $"項目名の行({columnCount})と違います。読み取り位置がずれるため中止します。");
+                }
+
+                var key = fields[keyIndex];
+
+                if (key.Length == 0)
+                {
+                    if (valueIndexes.Any(index => fields[index].Length > 0))
+                    {
+                        blankKeyWithValue++;
+                    }
+                    else
+                    {
+                        blankRows++;
+                    }
+
+                    continue;
+                }
+
+                keyedRows++;
+                if (!keys.Add(key))
+                {
+                    duplicates.Add(key);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (MalformedLineException ex)
+        {
+            return SourceKeyScan.Failed(
+                $"データ元の CSV を読み取れません({ex.LineNumber} 行目付近)。引用符の対応を確認してください。");
+        }
+        catch (Exception ex)
+        {
+            return SourceKeyScan.Failed($"データ元の CSV を読み取れません: {ex.Message}");
+        }
+
+        return new SourceKeyScan
+        {
+            Keys = keys,
+            DuplicateKeys = duplicates,
+            KeyedRowCount = keyedRows,
+            BlankRowCount = blankRows,
+            BlankKeyWithValueCount = blankKeyWithValue,
+        };
+    }
+
     private static TextFieldParser CreateParser(string filePath, Encoding encoding)
     {
         var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -284,12 +377,19 @@ internal static class SourceEncoding
         => bytes.Length >= prefix.Length && bytes.Take(prefix.Length).SequenceEqual(prefix);
 }
 
-/// <summary>項目名(ヘッダー)の共通検証。</summary>
+/// <summary>項目名(ヘッダー)の共通検証。データ元・転記先の両方で同じ規則を使う。</summary>
 internal static class SourceHeaders
 {
+    public static bool Validate(
+        IReadOnlyList<string?> raw,
+        out IReadOnlyList<string>? columns,
+        out string? error)
+        => Validate(raw, "データ元", out columns, out error);
+
     /// <summary>前後の空白だけ落とす。空・重複は勝手に直さず Block する。</summary>
     public static bool Validate(
         IReadOnlyList<string?> raw,
+        string subject,
         out IReadOnlyList<string>? columns,
         out string? error)
     {
@@ -302,7 +402,7 @@ internal static class SourceHeaders
         {
             if (trimmed[index].Length == 0)
             {
-                error = $"データ元の {index + 1} 列目の項目名が空です。"
+                error = $"{subject}の {index + 1} 列目の項目名が空です。"
                     + "項目名の行をすべて埋めてから読み込んでください。";
                 return false;
             }
@@ -312,7 +412,7 @@ internal static class SourceHeaders
             .GroupBy(name => name, StringComparer.Ordinal)
             .Where(group => group.Count() > 1))
         {
-            error = $"データ元の項目名「{duplicate.Key}」が重複しています。"
+            error = $"{subject}の項目名「{duplicate.Key}」が重複しています。"
                 + "どの列を使うか決められないため、項目名を分けてください。";
             return false;
         }

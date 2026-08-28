@@ -41,7 +41,8 @@ internal static class MutationPlanBuilder
         List<MergeIssue> issues,
         MutationDataSourceInfo? dataSource = null,
         MutationDataSourceCheck? dataSourceCheck = null,
-        bool reportScanIssues = true)
+        bool reportScanIssues = true,
+        MutationTargetTableInfo? targetTable = null)
     {
         if (reportScanIssues)
         {
@@ -135,6 +136,7 @@ internal static class MutationPlanBuilder
                 AuditPath = auditPath!,
                 Snapshot = MutationSnapshot.Take(filePath),
                 DataSource = dataSource,
+                TargetTable = targetTable,
                 Changes = changes,
             });
         }
@@ -172,11 +174,20 @@ internal static class MutationPlanBuilder
         IReadOnlyList<ResolvedCellMutation> mutations,
         IReadOnlyDictionary<string, WorkbookMutationScan> scansByFile,
         List<MergeIssue> issues)
+        => ReportScanIssues(
+            [.. mutations.Select(mutation => (mutation.FilePath, mutation.SheetName))],
+            scansByFile, issues);
+
+    /// <summary>ファイル × シートの組だけで報告する版(値が 1 つも解決できない場合に使う)。</summary>
+    public static void ReportScanIssues(
+        IReadOnlyList<(string FilePath, string SheetName)> locations,
+        IReadOnlyDictionary<string, WorkbookMutationScan> scansByFile,
+        List<MergeIssue> issues)
     {
         var reportedSheets = new HashSet<(string, string)>();
 
-        foreach (var fileGroup in mutations.GroupBy(
-            mutation => mutation.FilePath, StringComparer.OrdinalIgnoreCase))
+        foreach (var fileGroup in locations.GroupBy(
+            location => location.FilePath, StringComparer.OrdinalIgnoreCase))
         {
             var fileName = Path.GetFileName(fileGroup.Key);
             var scan = scansByFile.GetValueOrDefault(MutationPaths.Normalize(fileGroup.Key));
@@ -192,7 +203,7 @@ internal static class MutationPlanBuilder
             }
 
             foreach (var sheetName in fileGroup
-                .Select(mutation => mutation.SheetName)
+                .Select(location => location.SheetName)
                 .Distinct(StringComparer.Ordinal))
             {
                 if (scan.Sheets.GetValueOrDefault(sheetName)?.BlockReason is { } sheetReason

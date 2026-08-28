@@ -119,8 +119,8 @@ internal static class CellMutationScanner
         static WorkbookMutationScan Blocked(string reason) => new() { BlockReasons = [reason] };
     }
 
-    /// <summary>Workbook 全体として変更を止めるべき条件。</summary>
-    private static void AddWorkbookBlocks(
+    /// <summary>Workbook 全体として変更を止めるべき条件(表の突合更新からも同じ判定を使う)。</summary>
+    internal static void AddWorkbookBlocks(
         SpreadsheetDocument document,
         WorkbookPart workbookPart,
         List<string> blocks,
@@ -367,8 +367,12 @@ internal static class CellMutationScanner
         => keyCell is { } key
             && string.Equals(key.Reference, cellReference, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>対象セル 1 件の可否を、走査で集めた情報から判定する。</summary>
-    private static TargetCellScan ScanTargetCell(
+    /// <summary>
+    /// 対象セル 1 件の可否を、走査で集めた情報から判定する。
+    /// 位置が先に分かっている場合(2A/2B/2C1)も、表の行から見つける場合(2C2)も、
+    /// guard はこの 1 つを通す。
+    /// </summary>
+    internal static TargetCellScan ScanTargetCell(
         ScanTarget target,
         Cell? cell,
         HashSet<string> merged,

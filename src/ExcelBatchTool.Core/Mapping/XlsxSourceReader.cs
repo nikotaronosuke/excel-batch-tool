@@ -162,6 +162,90 @@ internal static class XlsxSourceReader
     }
 
     /// <summary>
+    /// キー列だけを読む(表同士の突合更新の 1 パス目)。
+    /// 値は保持せず、キーの集合・重複・空欄の数だけを集める。
+    /// </summary>
+    public static SourceKeyScan ReadKeys(
+        string filePath,
+        string sheetName,
+        int headerRow,
+        int keyColumn,
+        IReadOnlyList<int> valueColumns,
+        CancellationToken cancellationToken)
+    {
+        return Open(filePath, sheetName, (worksheetPart, context) =>
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            var duplicates = new HashSet<string>(StringComparer.Ordinal);
+            var keyedRows = 0;
+            var blankRows = 0;
+            var blankKeyWithValue = 0;
+
+            var numberFormats = context.NumberFormats;
+
+            using var reader = OpenXmlReader.Create(worksheetPart);
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!reader.IsStartElement || reader.ElementType != typeof(Row))
+                {
+                    continue;
+                }
+
+                var row = (Row)reader.LoadCurrentElement()!;
+                if (row.RowIndex?.Value is not { } rowIndex || rowIndex <= (uint)headerRow)
+                {
+                    continue;
+                }
+
+                var cells = IndexCells(row);
+                var keyValue = ReadValue(cells.GetValueOrDefault(keyColumn), context, numberFormats);
+
+                if (keyValue.IsBlank)
+                {
+                    var hasAnyValue = valueColumns.Any(column =>
+                        !ReadValue(cells.GetValueOrDefault(column), context, numberFormats).IsBlank);
+
+                    if (hasAnyValue)
+                    {
+                        blankKeyWithValue++;
+                    }
+                    else
+                    {
+                        blankRows++;
+                    }
+
+                    continue;
+                }
+
+                if (keyValue.Kind != SourceValueKind.Text)
+                {
+                    return SourceKeyScan.Failed(
+                        $"データ元の {rowIndex} 行目のキーが文字列ではありません。"
+                            + "「00123」と「123」を取り違えないよう、キーの列は文字列のセルだけを対象にします。");
+                }
+
+                keyedRows++;
+                if (!keys.Add(keyValue.Text!))
+                {
+                    duplicates.Add(keyValue.Text!);
+                }
+            }
+
+            return new SourceKeyScan
+            {
+                Keys = keys,
+                DuplicateKeys = duplicates,
+                KeyedRowCount = keyedRows,
+                BlankRowCount = blankRows,
+                BlankKeyWithValueCount = blankKeyWithValue,
+            };
+        },
+        SourceKeyScan.Failed);
+    }
+
+    /// <summary>
     /// データ元の .xlsx を開いて処理する。Excel の形式として壊れているものは扱わない
     /// (転記元としての条件であり、書き換え対象の条件とは別)。
     /// </summary>

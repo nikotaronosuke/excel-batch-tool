@@ -126,13 +126,27 @@ public sealed record CellMutationFilePlan
     /// <summary>転記元のデータファイル(データ元から転記した場合のみ)。</summary>
     public MutationDataSourceInfo? DataSource { get; init; }
 
+    /// <summary>転記先の表の読み方(表同士の突合更新の場合のみ)。</summary>
+    public MutationTargetTableInfo? TargetTable { get; init; }
+
     /// <summary>このファイルで実際に書き換えるシート(No-op と Block を除く)。</summary>
     public IReadOnlyList<CellMutationTargetPlan> Changes { get; init; }
         = Array.Empty<CellMutationTargetPlan>();
 }
 
-/// <summary>この値をデータ元のどこから取ったか。</summary>
-public sealed record MutationProvenance(string SourceColumn, string Key, int SourceRowNumber);
+/// <summary>
+/// この値をデータ元のどこから取ったか。表同士の突合更新では、
+/// 転記先のどの列・どの行を更新したかも持つ。
+/// </summary>
+public sealed record MutationProvenance(
+    string SourceColumn,
+    string Key,
+    int SourceRowNumber,
+    string? TargetColumn = null,
+    int? TargetRowNumber = null);
+
+/// <summary>転記先の表の読み方(控えファイルに残す)。</summary>
+public sealed record MutationTargetTableInfo(int HeaderRow, string KeyColumn);
 
 /// <summary>転記に使ったデータ元の情報(控えファイルに残す)。パスは持たない。</summary>
 public sealed record MutationDataSourceInfo
