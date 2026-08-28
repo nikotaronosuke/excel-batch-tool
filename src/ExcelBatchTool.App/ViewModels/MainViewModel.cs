@@ -14,11 +14,20 @@ public sealed class MainViewModel : ObservableObject
     private string _statusText = "ファイルを追加すると解析を開始します。対象ファイルは変更しません(読み取り専用)。";
 
     public MainViewModel(Func<string[]?> pickFiles, Func<string, string?> pickSavePath)
+        : this(pickFiles, pickSavePath, () => null)
+    {
+    }
+
+    public MainViewModel(
+        Func<string[]?> pickFiles,
+        Func<string, string?> pickSavePath,
+        Func<string?> pickSourceFile)
     {
         _pickFiles = pickFiles;
         Merge = new MergeViewModel(pickSavePath);
         Aggregation = new SheetAggregationViewModel(pickSavePath);
         Mutation = new CellMutationViewModel();
+        Mapping = new SourceMappingViewModel(pickSourceFile);
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
     }
@@ -31,8 +40,11 @@ public sealed class MainViewModel : ObservableObject
     /// <summary>「シートをまとめる」(Phase 1B.1)の状態。</summary>
     public SheetAggregationViewModel Aggregation { get; }
 
-    /// <summary>「セルをまとめて変更」(Phase 2A)の状態。</summary>
+    /// <summary>「セルをまとめて変更」(Phase 2A / 2B)の状態。</summary>
     public CellMutationViewModel Mutation { get; }
+
+    /// <summary>「表から転記」(Phase 2C1)の状態。</summary>
+    public SourceMappingViewModel Mapping { get; }
 
     public RelayCommand SelectFilesCommand { get; }
 
@@ -148,6 +160,7 @@ public sealed class MainViewModel : ObservableObject
             Merge.Sync(Files);
             Aggregation.Sync(Files);
             Mutation.Sync(Files);
+            Mapping.Sync(Files);
             StatusText = $"解析が完了しました({items.Count} ファイル)。対象ファイルは変更していません。";
         }
     }
@@ -169,6 +182,7 @@ public sealed class MainViewModel : ObservableObject
         Merge.Sync(Files);
         Aggregation.Sync(Files);
         Mutation.Sync(Files);
+        Mapping.Sync(Files);
         StatusText = "一覧をクリアしました。";
         ClearCommand.RaiseCanExecuteChanged();
     }

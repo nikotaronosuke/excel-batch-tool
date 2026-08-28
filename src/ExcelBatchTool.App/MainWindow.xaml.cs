@@ -12,8 +12,19 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _viewModel = new MainViewModel(PickFiles, PickSavePath);
+        _viewModel = new MainViewModel(PickFiles, PickSavePath, PickSourceFile);
         DataContext = _viewModel;
+    }
+
+    private static string? PickSourceFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "転記元のファイルを選択",
+            Filter = "Excel ブック / CSV (*.xlsx;*.csv)|*.xlsx;*.csv",
+        };
+
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
     }
 
     private static string[]? PickFiles()
