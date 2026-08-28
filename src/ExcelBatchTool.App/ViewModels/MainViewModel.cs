@@ -18,6 +18,7 @@ public sealed class MainViewModel : ObservableObject
         _pickFiles = pickFiles;
         Merge = new MergeViewModel(pickSavePath);
         Aggregation = new SheetAggregationViewModel(pickSavePath);
+        Mutation = new CellMutationViewModel();
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
     }
@@ -29,6 +30,9 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>「シートをまとめる」(Phase 1B.1)の状態。</summary>
     public SheetAggregationViewModel Aggregation { get; }
+
+    /// <summary>「セルをまとめて変更」(Phase 2A)の状態。</summary>
+    public CellMutationViewModel Mutation { get; }
 
     public RelayCommand SelectFilesCommand { get; }
 
@@ -142,7 +146,8 @@ public sealed class MainViewModel : ObservableObject
             IsAnalyzing = false;
             RefreshSummary();
             Merge.Sync(Files);
-        Aggregation.Sync(Files);
+            Aggregation.Sync(Files);
+            Mutation.Sync(Files);
             StatusText = $"解析が完了しました({items.Count} ファイル)。対象ファイルは変更していません。";
         }
     }
@@ -163,6 +168,7 @@ public sealed class MainViewModel : ObservableObject
         RefreshSummary();
         Merge.Sync(Files);
         Aggregation.Sync(Files);
+        Mutation.Sync(Files);
         StatusText = "一覧をクリアしました。";
         ClearCommand.RaiseCanExecuteChanged();
     }
