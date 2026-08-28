@@ -51,7 +51,7 @@ public sealed class CellMutator
                 // 作る前に一時ファイルの場所を控える。途中で失敗しても取り消し対象から漏れない。
                 var output = ReserveOutput(file);
                 pending.Add(output);
-                BuildOutput(preview, file, output, cancellationToken);
+                BuildOutput(file, output, cancellationToken);
 
                 completed++;
                 progress?.Report(new CellMutationProgress(completed, preview.Files.Count));
@@ -151,7 +151,6 @@ public sealed class CellMutator
 
     /// <summary>元ファイルをコピーし、コピー側だけを変更して検証する。</summary>
     private static void BuildOutput(
-        CellMutationPreview preview,
         CellMutationFilePlan file,
         PendingOutput output,
         CancellationToken cancellationToken)
@@ -159,9 +158,9 @@ public sealed class CellMutator
         // 元ファイルはここでしか読まない(読み取り専用のコピー)。
         File.Copy(file.FilePath, output.TempWorkbookPath);
 
-        var applied = ApplyChanges(preview, file, output.TempWorkbookPath, cancellationToken);
+        var applied = ApplyChanges(file, output.TempWorkbookPath, cancellationToken);
 
-        if (Validate(output.TempWorkbookPath, preview, applied) is { } validationError)
+        if (Validate(output.TempWorkbookPath, applied) is { } validationError)
         {
             throw new InvalidOperationException(
                 $"{file.FileName}: 出力ファイルの検証に失敗しました: {validationError}");
@@ -174,9 +173,9 @@ public sealed class CellMutator
     /// コピーした Workbook の対象セルだけを書き換える。
     /// <see cref="OpenSettings.AutoSave"/> を false にして、保存するのは対象 WorksheetPart だけにする
     /// (既定のままだと、シートを探すために読んだ workbook.xml まで書き戻されてしまう)。
+    /// 同じシートへの変更はまとめ、Worksheet の走査と保存を 1 シート 1 回にする。
     /// </summary>
     private static List<AppliedChange> ApplyChanges(
-        CellMutationPreview preview,
         CellMutationFilePlan file,
         string tempPath,
         CancellationToken cancellationToken)
@@ -189,35 +188,53 @@ public sealed class CellMutator
         var workbookPart = document.WorkbookPart
             ?? throw new InvalidOperationException($"{file.FileName}: Workbook 情報が見つかりません。");
 
-        foreach (var change in file.Changes)
+        // GroupBy は「最初に現れた順」を保つので、控えの並びは計画(=入力セット)の順のまま。
+        foreach (var group in file.Changes.GroupBy(change => change.SheetName, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var sheet = workbookPart.Workbook?.Sheets?.Elements<Sheet>()
-                .FirstOrDefault(item => string.Equals(item.Name?.Value, change.SheetName, StringComparison.Ordinal));
+                .FirstOrDefault(item => string.Equals(item.Name?.Value, group.Key, StringComparison.Ordinal));
 
             if (sheet?.Id?.Value is not { } relationshipId
                 || workbookPart.GetPartById(relationshipId) is not WorksheetPart worksheetPart)
             {
                 throw new InvalidOperationException(
-                    $"{file.FileName}: ワークシート「{change.SheetName}」が見つかりません。");
+                    $"{file.FileName}: ワークシート「{group.Key}」が見つかりません。");
             }
 
             var worksheet = worksheetPart.Worksheet
                 ?? throw new InvalidOperationException(
-                    $"{file.FileName}: シート「{change.SheetName}」の内容を読み取れません。");
+                    $"{file.FileName}: シート「{group.Key}」の内容を読み取れません。");
 
-            var cell = worksheet.Descendants<Cell>().FirstOrDefault(item =>
-                string.Equals(item.CellReference?.Value, change.CellReference, StringComparison.OrdinalIgnoreCase))
-                ?? throw new InvalidOperationException(
-                    $"{file.FileName} / {change.SheetName}: {change.CellReference} が見つかりません。");
+            // 対象セルを 1 回の走査でまとめて見つける(セルごとに Descendants を回さない)。
+            var changes = group.ToList();
+            var wanted = new HashSet<string>(
+                changes.Select(change => change.CellReference), StringComparer.OrdinalIgnoreCase);
+            var found = new Dictionary<string, Cell>(StringComparer.OrdinalIgnoreCase);
 
-            // 書式(StyleIndex)は触らない。値の中身だけを入れ替える。
-            var styleIndex = cell.StyleIndex?.Value;
-            SetValue(cell, preview.NewValue);
+            foreach (var cell in worksheet.Descendants<Cell>())
+            {
+                if (cell.CellReference?.Value is { } reference && wanted.Contains(reference))
+                {
+                    found[reference] = cell;
+                }
+            }
 
+            foreach (var change in changes)
+            {
+                var cell = found.GetValueOrDefault(change.CellReference)
+                    ?? throw new InvalidOperationException(
+                        $"{file.FileName} / {group.Key}: {change.CellReference} が見つかりません。");
+
+                // 書式(StyleIndex)は触らない。値の中身だけを入れ替える。
+                var styleIndex = cell.StyleIndex?.Value;
+                SetValue(cell, change.NewValue);
+                applied.Add(new AppliedChange(change, styleIndex));
+            }
+
+            // このシートの変更をまとめて 1 回で保存する。
             worksheet.Save();
-            applied.Add(new AppliedChange(change, styleIndex));
         }
 
         return applied;
@@ -251,7 +268,6 @@ public sealed class CellMutator
     /// <summary>作った一時ファイルを開き直し、対象セルと Open XML の妥当性を確かめる。</summary>
     private static string? Validate(
         string path,
-        CellMutationPreview preview,
         IReadOnlyList<AppliedChange> applied)
     {
         try
@@ -291,7 +307,7 @@ public sealed class CellMutator
                     return $"シート「{change.SheetName}」の {change.CellReference} の書式が変わっています。";
                 }
 
-                if (CheckValue(cell, preview.NewValue) is { } valueError)
+                if (CheckValue(cell, change.NewValue) is { } valueError)
                 {
                     return $"シート「{change.SheetName}」の {change.CellReference}: {valueError}";
                 }
