@@ -40,6 +40,30 @@ internal sealed class TestAggregationSheetSpec
 
     public bool IsHidden { get; init; }
 
+    /// <summary>「非常に非表示」。<see cref="IsHidden"/> より優先する。</summary>
+    public bool IsVeryHidden { get; init; }
+
+    public bool AddPageMargins { get; init; }
+
+    public bool AddPageSetup { get; init; }
+
+    public bool AddPrintOptions { get; init; }
+
+    public bool AddHeaderFooter { get; init; }
+
+    public bool AddRowBreaks { get; init; }
+
+    public bool AddColumnBreaks { get; init; }
+
+    /// <summary>シート見出しの色(sheetPr/tabColor)を付ける。</summary>
+    public bool AddTabColor { get; init; }
+
+    /// <summary>印刷の拡大縮小設定(sheetPr/pageSetUpPr)を付ける。</summary>
+    public bool AddPageSetupProperties { get; init; }
+
+    /// <summary>ふりがな設定(phoneticPr)を付ける。</summary>
+    public bool AddPhoneticProperties { get; init; }
+
     /// <summary>セル値。string / int / double / bool / DateTime / Styled / null。</summary>
     public object?[][] Rows { get; init; } = [];
 
@@ -238,11 +262,26 @@ internal static class TestSheetWorkbookFactory
         }
 
         var lastRow = Math.Max(1u, rowIndex);
-        var children = new List<OpenXmlElement>
+        var children = new List<OpenXmlElement>();
+
+        if (spec.AddTabColor || spec.AddPageSetupProperties)
         {
-            new SheetDimension { Reference = $"A1:{Letters(maxColumn)}{lastRow}" },
-            BuildSheetViews(spec),
-        };
+            var sheetProperties = new SheetProperties();
+            if (spec.AddTabColor)
+            {
+                sheetProperties.TabColor = new TabColor { Rgb = "FF0000FF" };
+            }
+
+            if (spec.AddPageSetupProperties)
+            {
+                sheetProperties.PageSetupProperties = new PageSetupProperties { FitToPage = true };
+            }
+
+            children.Add(sheetProperties);
+        }
+
+        children.Add(new SheetDimension { Reference = $"A1:{Letters(maxColumn)}{lastRow}" });
+        children.Add(BuildSheetViews(spec));
 
         if (spec.ColumnProperties.Length > 0)
         {
@@ -287,6 +326,11 @@ internal static class TestSheetWorkbookFactory
             });
         }
 
+        if (spec.AddPhoneticProperties)
+        {
+            children.Add(new PhoneticProperties { FontId = 0U });
+        }
+
         if (spec.AddConditionalFormatting)
         {
             children.Add(new ConditionalFormatting(
@@ -309,6 +353,53 @@ internal static class TestSheetWorkbookFactory
                     SequenceOfReferences = new ListValue<StringValue> { InnerText = "A1:A5" },
                 })
             { Count = 1U });
+        }
+
+        // CT_Worksheet の要素順に合わせて印刷/ページレイアウト系を追加する。
+        if (spec.AddPrintOptions)
+        {
+            children.Add(new PrintOptions { HorizontalCentered = true });
+        }
+
+        if (spec.AddPageMargins)
+        {
+            children.Add(new PageMargins
+            {
+                Left = 0.7D,
+                Right = 0.7D,
+                Top = 0.75D,
+                Bottom = 0.75D,
+                Header = 0.3D,
+                Footer = 0.3D,
+            });
+        }
+
+        if (spec.AddPageSetup)
+        {
+            children.Add(new PageSetup { PaperSize = 9U, Orientation = OrientationValues.Landscape });
+        }
+
+        if (spec.AddHeaderFooter)
+        {
+            children.Add(new HeaderFooter(new OddHeader("架空ヘッダー")));
+        }
+
+        if (spec.AddRowBreaks)
+        {
+            children.Add(new RowBreaks(new Break { Id = 2U, Max = 16383U, ManualPageBreak = true })
+            {
+                Count = 1U,
+                ManualBreakCount = 1U,
+            });
+        }
+
+        if (spec.AddColumnBreaks)
+        {
+            children.Add(new ColumnBreaks(new Break { Id = 2U, Max = 1048575U, ManualPageBreak = true })
+            {
+                Count = 1U,
+                ManualBreakCount = 1U,
+            });
         }
 
         var worksheet = new Worksheet();
@@ -383,7 +474,11 @@ internal static class TestSheetWorkbookFactory
             Name = spec.Name,
         };
 
-        if (spec.IsHidden)
+        if (spec.IsVeryHidden)
+        {
+            sheet.State = SheetStateValues.VeryHidden;
+        }
+        else if (spec.IsHidden)
         {
             sheet.State = SheetStateValues.Hidden;
         }

@@ -27,27 +27,31 @@ internal sealed class WorkbookReadContext
 {
     private readonly string[] _sharedStrings;
     private readonly bool[] _sharedStringIsRichText;
+    private readonly bool[] _sharedStringHasPhoneticText;
     private readonly NumberFormatKind[] _styleKinds;
     private readonly bool _date1904;
 
     private WorkbookReadContext(
         string[] sharedStrings,
         bool[] sharedStringIsRichText,
+        bool[] sharedStringHasPhoneticText,
         NumberFormatKind[] styleKinds,
         bool date1904)
     {
         _sharedStrings = sharedStrings;
         _sharedStringIsRichText = sharedStringIsRichText;
+        _sharedStringHasPhoneticText = sharedStringHasPhoneticText;
         _styleKinds = styleKinds;
         _date1904 = date1904;
     }
 
     public static WorkbookReadContext Create(WorkbookPart workbookPart)
     {
-        var (sharedStrings, richFlags) = LoadSharedStrings(workbookPart);
+        var shared = LoadSharedStrings(workbookPart);
         var styleKinds = LoadStyleKinds(workbookPart);
         var date1904 = workbookPart.Workbook?.WorkbookProperties?.Date1904?.Value ?? false;
-        return new WorkbookReadContext(sharedStrings, richFlags, styleKinds, date1904);
+        return new WorkbookReadContext(
+            shared.Values, shared.IsRichText, shared.HasPhoneticText, styleKinds, date1904);
     }
 
     /// <summary>この Workbook が 1904 date system か。</summary>
@@ -57,7 +61,12 @@ internal sealed class WorkbookReadContext
     /// このセルが「文字単位の書式(リッチテキスト)を持つ共有文字列」を参照しているか。
     /// リッチテキストは書式を落とさずに移せないため、呼び出し側で明示的に扱う。
     /// </summary>
-    public bool ReferencesRichText(Cell cell)
+    public bool ReferencesRichText(Cell cell) => SharedStringFlag(cell, _sharedStringIsRichText);
+
+    /// <summary>このセルが「ふりがな(rPh)を持つ共有文字列」を参照しているか。</summary>
+    public bool ReferencesPhoneticText(Cell cell) => SharedStringFlag(cell, _sharedStringHasPhoneticText);
+
+    private static bool SharedStringFlag(Cell cell, bool[] flags)
     {
         if (cell.DataType?.Value != CellValues.SharedString)
         {
@@ -66,8 +75,8 @@ internal sealed class WorkbookReadContext
 
         return int.TryParse(cell.CellValue?.InnerText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
             && index >= 0
-            && index < _sharedStringIsRichText.Length
-            && _sharedStringIsRichText[index];
+            && index < flags.Length
+            && flags[index];
     }
 
     /// <summary>セルの値を読む。日付は 1900 date system の serial 値へ正規化する。</summary>
@@ -174,16 +183,18 @@ internal sealed class WorkbookReadContext
         return _styleKinds[index];
     }
 
-    private static (string[] Values, bool[] IsRichText) LoadSharedStrings(WorkbookPart workbookPart)
+    private static (string[] Values, bool[] IsRichText, bool[] HasPhoneticText) LoadSharedStrings(
+        WorkbookPart workbookPart)
     {
         var part = workbookPart.SharedStringTablePart;
         if (part is null)
         {
-            return ([], []);
+            return ([], [], []);
         }
 
         var values = new List<string>();
         var richFlags = new List<bool>();
+        var phoneticFlags = new List<bool>();
 
         using var reader = OpenXmlReader.Create(part);
         while (reader.Read())
@@ -191,14 +202,21 @@ internal sealed class WorkbookReadContext
             if (reader.IsStartElement && reader.ElementType == typeof(SharedStringItem))
             {
                 var item = (SharedStringItem)reader.LoadCurrentElement()!;
-                values.Add(item.InnerText);
+
+                // InnerText は rPh(ふりがな)も拾ってしまうので、本文の Text だけを連結する。
+                values.Add(string.Concat(item.Elements<Text>().Select(text => text.Text))
+                    is { Length: > 0 } plain
+                        ? plain
+                        : string.Concat(item.Elements<Run>().SelectMany(run => run.Elements<Text>())
+                            .Select(text => text.Text)));
 
                 // 書式付きの run(rPr を持つ)を含むものをリッチテキストとみなす。
                 richFlags.Add(item.Descendants<RunProperties>().Any());
+                phoneticFlags.Add(item.Elements<PhoneticRun>().Any());
             }
         }
 
-        return ([.. values], [.. richFlags]);
+        return ([.. values], [.. richFlags], [.. phoneticFlags]);
     }
 
     private static NumberFormatKind[] LoadStyleKinds(WorkbookPart workbookPart)

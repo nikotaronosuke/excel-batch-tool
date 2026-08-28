@@ -17,8 +17,19 @@ public sealed class SheetAggregationPlan
     /// <summary>出力 Workbook 内でのシート名。</summary>
     public required string OutputSheetName { get; init; }
 
-    /// <summary>元シートが非表示だった。出力でも非表示にする。</summary>
-    public bool IsHidden { get; init; }
+    /// <summary>元シートの表示状態。出力でもそのまま再現する。</summary>
+    public SheetVisibility Visibility { get; init; } = SheetVisibility.Visible;
+
+    /// <summary>表示されていない(hidden または veryHidden)。</summary>
+    public bool IsHidden => Visibility != SheetVisibility.Visible;
+
+    /// <summary>表示状態の日本語表記。</summary>
+    public string VisibilityDisplay => Visibility switch
+    {
+        SheetVisibility.Hidden => "非表示",
+        SheetVisibility.VeryHidden => "非常に非表示",
+        _ => "表示",
+    };
 
     /// <summary>このシート単体で集約できない。</summary>
     public bool IsBlocked { get; init; }

@@ -103,7 +103,12 @@ public sealed class SheetRowViewModel(SheetInfo sheet)
             _ => "不明",
         };
 
-        return sheet.IsHidden ? $"{kind}(非表示)" : kind;
+        return sheet.Visibility switch
+        {
+            SheetVisibility.Hidden => $"{kind}(非表示)",
+            SheetVisibility.VeryHidden => $"{kind}(非常に非表示)",
+            _ => kind,
+        };
     }
 
     private static string BuildRangeDisplay(SheetInfo sheet)

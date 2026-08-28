@@ -14,9 +14,13 @@ internal sealed class SheetCopyScan
     /// <summary>このシートを集約できない理由。1 件でもあれば Block。</summary>
     public IReadOnlyList<string> BlockReasons { get; init; } = Array.Empty<string>();
 
+    /// <summary>集約はできるが、利用者に伝えるべきこと。</summary>
+    public IReadOnlyList<string> WarningReasons { get; init; } = Array.Empty<string>();
+
     public bool IsBlocked => BlockReasons.Count > 0;
 
-    public bool IsHidden { get; init; }
+    /// <summary>元シートの表示状態(visible / hidden / veryHidden)。そのまま出力へ引き継ぐ。</summary>
+    public SheetVisibility Visibility { get; init; } = SheetVisibility.Visible;
 
     public string? DimensionReference { get; init; }
 
@@ -167,10 +171,9 @@ internal static class WorksheetCopyScanner
                 return Blocked("グラフシート・マクロシート等は集約対象にできません(通常のワークシートのみ)。");
             }
 
-            var isHidden = sheet.State is not null
-                && (sheet.State.Value == SheetStateValues.Hidden || sheet.State.Value == SheetStateValues.VeryHidden);
+            var visibility = WorkbookAnalyzer.ResolveVisibility(sheet.State?.Value);
 
-            return ScanWorksheetPart(worksheetPart, workbookPart, isHidden, cancellationToken);
+            return ScanWorksheetPart(worksheetPart, workbookPart, visibility, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -191,10 +194,11 @@ internal static class WorksheetCopyScanner
     private static SheetCopyScan ScanWorksheetPart(
         WorksheetPart worksheetPart,
         WorkbookPart workbookPart,
-        bool isHidden,
+        SheetVisibility visibility,
         CancellationToken cancellationToken)
     {
         var blocks = new List<string>();
+        var warnings = new List<string>();
 
         AddPartLevelBlocks(worksheetPart, blocks);
 
@@ -214,6 +218,7 @@ internal static class WorksheetCopyScanner
 
         var hasFormula = false;
         var hasRichText = false;
+        var hasPhoneticText = false;
         var sheetViewSeen = false;
 
         using (var reader = OpenXmlReader.Create(worksheetPart))
@@ -234,6 +239,7 @@ internal static class WorksheetCopyScanner
                     var cell = (Cell)reader.LoadCurrentElement()!;
                     hasFormula |= cell.CellFormula is not null;
                     hasRichText |= context.ReferencesRichText(cell);
+                    hasPhoneticText |= context.ReferencesPhoneticText(cell);
                 }
                 else if (type == typeof(SheetDimension))
                 {
@@ -297,6 +303,33 @@ internal static class WorksheetCopyScanner
                 {
                     AddOnce(blocks, "オートフィルターを含むため、Phase 1B.1 では集約できません。");
                 }
+                else if (type == typeof(PrintOptions)
+                    || type == typeof(PageMargins)
+                    || type == typeof(PageSetup)
+                    || type == typeof(HeaderFooter)
+                    || type == typeof(RowBreaks)
+                    || type == typeof(ColumnBreaks)
+                    || type == typeof(DrawingHeaderFooter))
+                {
+                    AddOnce(blocks, "印刷設定・ページレイアウト情報を含むため、Phase 1B.1 では集約できません。");
+                }
+                else if (type == typeof(SheetProperties))
+                {
+                    var properties = (SheetProperties)reader.LoadCurrentElement()!;
+                    if (properties.PageSetupProperties is not null)
+                    {
+                        AddOnce(blocks, "印刷設定・ページレイアウト情報を含むため、Phase 1B.1 では集約できません。");
+                    }
+
+                    if (properties.TabColor is not null)
+                    {
+                        AddOnce(warnings, "シート見出しの色は引き継がれません。");
+                    }
+                }
+                else if (type == typeof(PhoneticProperties))
+                {
+                    AddOnce(warnings, "ふりがな(phonetic)情報は引き継がれません。");
+                }
             }
         }
 
@@ -310,6 +343,11 @@ internal static class WorksheetCopyScanner
             blocks.Add("文字単位で書式が設定されたセル(リッチテキスト)を含むため、Phase 1B.1 では集約できません。");
         }
 
+        if (hasPhoneticText)
+        {
+            AddOnce(warnings, "ふりがな(phonetic)情報は引き継がれません。");
+        }
+
         if (HasDuplicateOrOverlappingMerges(mergeReferences))
         {
             blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
@@ -318,7 +356,8 @@ internal static class WorksheetCopyScanner
         return new SheetCopyScan
         {
             BlockReasons = blocks,
-            IsHidden = isHidden,
+            WarningReasons = warnings,
+            Visibility = visibility,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,
