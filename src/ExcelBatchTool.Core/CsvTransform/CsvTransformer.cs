@@ -43,21 +43,20 @@ public sealed class CsvTransformer
                 $"「{preview.OutputFileName}」はすでにあります。既存のファイルは上書きしません。");
         }
 
-        var tempOutput = preview.OutputPath + ".tmp";
-        var tempAudit = preview.AuditPath + ".tmp";
+        // 作業用ファイルは、この実行だけが持つ名前で新規作成する。
+        // 実行前からあったファイルは、上書きも取り消しの対象にもしない。
         var created = new List<string>();
 
         try
         {
-            var written = Write(preview, request, tempOutput, created, cancellationToken);
+            var written = Write(preview, request, created, out var tempOutput, cancellationToken);
 
             if (Verify(preview, request, tempOutput, written) is { } verifyError)
             {
                 return CsvTransformResult.Failed(Describe(verifyError, RollBack(created)));
             }
 
-            CsvTransformAuditLog.Write(tempAudit, preview, request, snapshot, written.RowCount);
-            created.Add(tempAudit);
+            var tempAudit = WriteAudit(preview, request, snapshot, written.RowCount, created);
 
             // 直前にもう一度確かめてから確定する。
             if (File.Exists(preview.OutputPath) || File.Exists(preview.AuditPath))
@@ -122,17 +121,21 @@ public sealed class CsvTransformer
     private static WrittenCsv Write(
         CsvTransformPreview preview,
         CsvTransformRequest request,
-        string tempPath,
         List<string> created,
+        out string tempPath,
         CancellationToken cancellationToken)
     {
         var header = preview.Columns.Select(column => column.OutputName).ToArray();
         using var fingerprint = new CsvFingerprint();
         var rowCount = 0;
 
-        created.Add(tempPath);
+        // 新規作成できた時点で「この実行が持つファイル」になる。
+        // 取り消しの対象に入れてから、はじめて中身を書く。
+        var owned = CreateOwnedFile(preview.OutputPath);
+        tempPath = owned.Path;
+        created.Add(owned.Path);
 
-        using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        using (var stream = owned.Stream)
         using (var writer = new CsvWriter(stream, request.Encoding, request.QuoteMode))
         {
             writer.WriteRow(header);
@@ -157,6 +160,54 @@ public sealed class CsvTransformer
         }
 
         return new WrittenCsv(header, rowCount, fingerprint.Value);
+    }
+
+    /// <summary>控えを一時ファイルへ書く。既存ファイルは決して上書きしない。</summary>
+    private static string WriteAudit(
+        CsvTransformPreview preview,
+        CsvTransformRequest request,
+        SourceSnapshot snapshot,
+        int rowCount,
+        List<string> created)
+    {
+        var owned = CreateOwnedFile(preview.AuditPath);
+        created.Add(owned.Path);
+
+        using (var stream = owned.Stream)
+        {
+            CsvTransformAuditLog.Write(stream, preview, request, snapshot, rowCount);
+            stream.Flush(flushToDisk: true);
+        }
+
+        return owned.Path;
+    }
+
+    /// <summary>
+    /// この実行だけが持つ作業用ファイルを、同じフォルダーに新しく作る。
+    ///
+    /// 名前が既に使われていたら、そのファイルには一切触れず別の名前で作り直す。
+    /// 固定名にすると、実行前からあった同名ファイルを取り消しの対象にしてしまうため、
+    /// 実行ごとに違う名前にしている。名前は作業用ファイルにしか使わないので、
+    /// 出来上がるファイル名にも控えにも残らない。
+    /// </summary>
+    private static OwnedFile CreateOwnedFile(string finalPath)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var candidate = $"{finalPath}.{Guid.NewGuid():n}.tmp";
+            try
+            {
+                return new OwnedFile(
+                    candidate,
+                    new FileStream(candidate, FileMode.CreateNew, FileAccess.Write, FileShare.None));
+            }
+            catch (IOException) when (File.Exists(candidate))
+            {
+                // 既にあるものには一切触らず、別の名前を試す。
+            }
+        }
+
+        throw new IOException("作業用のファイルを作れませんでした。");
     }
 
     /// <summary>
@@ -339,6 +390,9 @@ public sealed class CsvTransformer
                 + "元のファイルは変更していません。";
 
     private sealed record WrittenCsv(IReadOnlyList<string> Header, int RowCount, string Fingerprint);
+
+    /// <summary>新規作成できた作業用ファイル(この実行が持つもの)。</summary>
+    private sealed record OwnedFile(string Path, FileStream Stream);
 }
 
 /// <summary>
