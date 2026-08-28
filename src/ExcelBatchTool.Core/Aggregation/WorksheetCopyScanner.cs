@@ -1,0 +1,428 @@
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Spreadsheet;
+using ExcelBatchTool.Core.Merge;
+
+namespace ExcelBatchTool.Core.Aggregation;
+
+/// <summary>
+/// 1 つの Worksheet を集約できるか調べた結果と、書き出しに必要な構造メタデータ。
+/// セルの中身は保持しない(書き出し時にストリーミングで読み直す)。
+/// </summary>
+internal sealed class SheetCopyScan
+{
+    /// <summary>このシートを集約できない理由。1 件でもあれば Block。</summary>
+    public IReadOnlyList<string> BlockReasons { get; init; } = Array.Empty<string>();
+
+    public bool IsBlocked => BlockReasons.Count > 0;
+
+    public bool IsHidden { get; init; }
+
+    public string? DimensionReference { get; init; }
+
+    /// <summary>行の既定の高さなど。</summary>
+    public SheetFormatProperties? SheetFormat { get; init; }
+
+    /// <summary>列の幅・非表示などの定義。</summary>
+    public IReadOnlyList<Column> Columns { get; init; } = Array.Empty<Column>();
+
+    /// <summary>ウィンドウ枠の固定。</summary>
+    public Pane? FreezePane { get; init; }
+
+    public IReadOnlyList<Selection> Selections { get; init; } = Array.Empty<Selection>();
+
+    public bool ShowGridLines { get; init; } = true;
+
+    public bool ShowRowColHeaders { get; init; } = true;
+
+    public bool RightToLeft { get; init; }
+
+    public uint? ZoomScale { get; init; }
+
+    /// <summary>シートの保護設定。</summary>
+    public SheetProtection? Protection { get; init; }
+
+    /// <summary>結合セルの範囲(A1 形式)。</summary>
+    public IReadOnlyList<string> MergeReferences { get; init; } = Array.Empty<string>();
+}
+
+/// <summary>
+/// Worksheet を集約できるか検証する。対象ファイルは読み取り専用でしか開かない。
+/// Phase 1B.1 で保持できない要素を見つけたら、黙って落とさず Block 理由として返す。
+/// </summary>
+internal static class WorksheetCopyScanner
+{
+    /// <summary>Workbook 単位の検証結果。</summary>
+    public sealed record WorkbookScan(IReadOnlyList<string> BlockReasons, string? ThemeFingerprint);
+
+    /// <summary>Workbook 全体を集約対象にできない場合の理由(シートを切り離すと意味が壊れるもの)。</summary>
+    public static WorkbookScan ScanWorkbook(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            return new WorkbookScan(["ファイルが見つかりません。"], null);
+        }
+
+        if (!string.Equals(Path.GetExtension(filePath), ".xlsx", StringComparison.OrdinalIgnoreCase))
+        {
+            return new WorkbookScan(["現在のバージョンで扱えるのは .xlsx のみです。"], null);
+        }
+
+        try
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var document = SpreadsheetDocument.Open(stream, isEditable: false);
+
+            var workbookPart = document.WorkbookPart;
+            if (workbookPart is null)
+            {
+                return new WorkbookScan(["Workbook 情報が見つかりません。"], null);
+            }
+
+            var reasons = new List<string>();
+
+            if (workbookPart.VbaProjectPart is not null
+                || workbookPart.ContentType.Contains("macroEnabled", StringComparison.OrdinalIgnoreCase))
+            {
+                reasons.Add("マクロ (VBA) を含むため、Phase 1B.1 では集約できません。");
+            }
+
+            var hasExternalLink = workbookPart.ExternalWorkbookParts.Any()
+                || (workbookPart.Workbook?.GetFirstChild<ExternalReferences>()?
+                    .Elements<ExternalReference>().Any() ?? false)
+                || workbookPart.ConnectionsPart is not null;
+
+            if (hasExternalLink)
+            {
+                reasons.Add("他のブックへの外部参照(外部リンク)を含むため、Phase 1B.1 では集約できません。");
+            }
+
+            return new WorkbookScan(reasons, ComputeThemeFingerprint(workbookPart));
+        }
+        catch (Exception ex) when (ex is InvalidDataException or FileFormatException or OpenXmlPackageException)
+        {
+            return new WorkbookScan(
+                ["ファイルを読み取れません。パスワード保護(暗号化)されているか、破損している可能性があります。"], null);
+        }
+        catch (Exception ex)
+        {
+            return new WorkbookScan([$"読み取りエラー: {ex.Message}"], null);
+        }
+    }
+
+    /// <summary>テーマ(配色定義)の同一性を比べるための指紋。テーマが無い場合は null。</summary>
+    private static string? ComputeThemeFingerprint(WorkbookPart workbookPart)
+    {
+        var themePart = workbookPart.ThemePart;
+        if (themePart is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var stream = themePart.GetStream(FileMode.Open, FileAccess.Read);
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>選択された 1 シートを走査する。Workbook 単位の問題は <see cref="ScanWorkbook"/> で扱う。</summary>
+    public static SheetCopyScan ScanSheet(string filePath, string sheetName, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var document = SpreadsheetDocument.Open(stream, isEditable: false);
+
+            var workbookPart = document.WorkbookPart;
+            if (workbookPart is null)
+            {
+                return Blocked("Workbook 情報が見つかりません。");
+            }
+
+            var sheet = workbookPart.Workbook?.Sheets?.Elements<Sheet>()
+                .FirstOrDefault(s => string.Equals(s.Name?.Value, sheetName, StringComparison.Ordinal));
+
+            if (sheet?.Id?.Value is not { } relationshipId)
+            {
+                return Blocked($"ワークシート「{sheetName}」が見つかりません。");
+            }
+
+            OpenXmlPart? part;
+            try
+            {
+                part = workbookPart.GetPartById(relationshipId);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                part = null;
+            }
+
+            if (part is not WorksheetPart worksheetPart)
+            {
+                return Blocked("グラフシート・マクロシート等は集約対象にできません(通常のワークシートのみ)。");
+            }
+
+            var isHidden = sheet.State is not null
+                && (sheet.State.Value == SheetStateValues.Hidden || sheet.State.Value == SheetStateValues.VeryHidden);
+
+            return ScanWorksheetPart(worksheetPart, workbookPart, isHidden, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or FileFormatException or OpenXmlPackageException)
+        {
+            return Blocked("ファイルを読み取れません。パスワード保護(暗号化)されているか、破損している可能性があります。");
+        }
+        catch (Exception ex)
+        {
+            return Blocked($"読み取りエラー: {ex.Message}");
+        }
+
+        static SheetCopyScan Blocked(string reason) => new() { BlockReasons = [reason] };
+    }
+
+    private static SheetCopyScan ScanWorksheetPart(
+        WorksheetPart worksheetPart,
+        WorkbookPart workbookPart,
+        bool isHidden,
+        CancellationToken cancellationToken)
+    {
+        var blocks = new List<string>();
+
+        AddPartLevelBlocks(worksheetPart, blocks);
+
+        var context = WorkbookReadContext.Create(workbookPart);
+
+        string? dimension = null;
+        SheetFormatProperties? sheetFormat = null;
+        var columns = new List<Column>();
+        Pane? pane = null;
+        var selections = new List<Selection>();
+        var showGridLines = true;
+        var showRowColHeaders = true;
+        var rightToLeft = false;
+        uint? zoomScale = null;
+        SheetProtection? protection = null;
+        var mergeReferences = new List<string>();
+
+        var hasFormula = false;
+        var hasRichText = false;
+        var sheetViewSeen = false;
+
+        using (var reader = OpenXmlReader.Create(worksheetPart))
+        {
+            while (reader.Read())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!reader.IsStartElement)
+                {
+                    continue;
+                }
+
+                var type = reader.ElementType;
+
+                if (type == typeof(Cell))
+                {
+                    var cell = (Cell)reader.LoadCurrentElement()!;
+                    hasFormula |= cell.CellFormula is not null;
+                    hasRichText |= context.ReferencesRichText(cell);
+                }
+                else if (type == typeof(SheetDimension))
+                {
+                    dimension = ((SheetDimension)reader.LoadCurrentElement()!).Reference?.Value;
+                }
+                else if (type == typeof(SheetFormatProperties))
+                {
+                    sheetFormat = (SheetFormatProperties)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(Columns))
+                {
+                    var element = (Columns)reader.LoadCurrentElement()!;
+                    columns.AddRange(element.Elements<Column>().Select(column => (Column)column.CloneNode(true)));
+                }
+                else if (type == typeof(SheetView))
+                {
+                    var view = (SheetView)reader.LoadCurrentElement()!;
+                    if (!sheetViewSeen)
+                    {
+                        sheetViewSeen = true;
+                        pane = view.GetFirstChild<Pane>() is { } sourcePane
+                            ? (Pane)sourcePane.CloneNode(true)
+                            : null;
+                        selections.AddRange(view.Elements<Selection>()
+                            .Select(selection => (Selection)selection.CloneNode(true)));
+                        showGridLines = view.ShowGridLines?.Value ?? true;
+                        showRowColHeaders = view.ShowRowColHeaders?.Value ?? true;
+                        rightToLeft = view.RightToLeft?.Value ?? false;
+                        zoomScale = view.ZoomScale?.Value;
+                    }
+                }
+                else if (type == typeof(SheetProtection))
+                {
+                    protection = (SheetProtection)reader.LoadCurrentElement()!.CloneNode(true);
+                }
+                else if (type == typeof(MergeCell))
+                {
+                    var reference = ((MergeCell)reader.LoadCurrentElement()!).Reference?.Value;
+                    if (string.IsNullOrWhiteSpace(reference) || !CellRangeParser.TryParseRange(reference, out _))
+                    {
+                        blocks.Add("結合セルの定義を解釈できません(壊れている可能性があります)。");
+                    }
+                    else
+                    {
+                        mergeReferences.Add(reference);
+                    }
+                }
+                else if (type == typeof(ConditionalFormatting))
+                {
+                    AddOnce(blocks, "条件付き書式を含むため、Phase 1B.1 では集約できません。");
+                }
+                else if (type == typeof(DataValidation) || type == typeof(DataValidations))
+                {
+                    AddOnce(blocks, "データの入力規則を含むため、Phase 1B.1 では集約できません。");
+                }
+                else if (type == typeof(Hyperlink))
+                {
+                    AddOnce(blocks, "ハイパーリンクを含むため、Phase 1B.1 では集約できません。");
+                }
+                else if (type == typeof(AutoFilter))
+                {
+                    AddOnce(blocks, "オートフィルターを含むため、Phase 1B.1 では集約できません。");
+                }
+            }
+        }
+
+        if (hasFormula)
+        {
+            blocks.Add("数式を含むため、Phase 1B.1 では集約できません(参照先が壊れる可能性があるため)。");
+        }
+
+        if (hasRichText)
+        {
+            blocks.Add("文字単位で書式が設定されたセル(リッチテキスト)を含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (HasDuplicateOrOverlappingMerges(mergeReferences))
+        {
+            blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
+        }
+
+        return new SheetCopyScan
+        {
+            BlockReasons = blocks,
+            IsHidden = isHidden,
+            DimensionReference = dimension,
+            SheetFormat = sheetFormat,
+            Columns = columns,
+            FreezePane = pane,
+            Selections = selections,
+            ShowGridLines = showGridLines,
+            ShowRowColHeaders = showRowColHeaders,
+            RightToLeft = rightToLeft,
+            ZoomScale = zoomScale,
+            Protection = protection,
+            MergeReferences = mergeReferences,
+        };
+    }
+
+    private static void AddPartLevelBlocks(WorksheetPart worksheetPart, List<string> blocks)
+    {
+        var drawingsPart = worksheetPart.DrawingsPart;
+        if (drawingsPart is not null)
+        {
+            if (drawingsPart.ChartParts.Any())
+            {
+                blocks.Add("グラフを含むため、Phase 1B.1 では集約できません。");
+            }
+
+            if (drawingsPart.ImageParts.Any())
+            {
+                blocks.Add("画像を含むため、Phase 1B.1 では集約できません。");
+            }
+
+            if (!drawingsPart.ChartParts.Any() && !drawingsPart.ImageParts.Any())
+            {
+                blocks.Add("図形を含むため、Phase 1B.1 では集約できません。");
+            }
+        }
+
+        if (worksheetPart.ImageParts.Any())
+        {
+            blocks.Add("シートの背景画像を含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.VmlDrawingParts.Any())
+        {
+            blocks.Add("旧形式の図形・コメント枠を含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.TableDefinitionParts.Any())
+        {
+            blocks.Add("テーブル(ListObject)を含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.PivotTableParts.Any())
+        {
+            blocks.Add("ピボットテーブルを含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.WorksheetCommentsPart is not null
+            || worksheetPart.GetPartsOfType<WorksheetThreadedCommentsPart>().Any())
+        {
+            blocks.Add("コメントを含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.EmbeddedObjectParts.Any() || worksheetPart.EmbeddedPackageParts.Any())
+        {
+            blocks.Add("埋め込みオブジェクト (OLE) を含むため、Phase 1B.1 では集約できません。");
+        }
+
+        if (worksheetPart.EmbeddedControlPersistenceParts.Any() || worksheetPart.ControlPropertiesParts.Any())
+        {
+            blocks.Add("ActiveX コントロールを含むため、Phase 1B.1 では集約できません。");
+        }
+    }
+
+    private static bool HasDuplicateOrOverlappingMerges(IReadOnlyList<string> references)
+    {
+        var ranges = new List<CellRangeParser.CellRange>(references.Count);
+        foreach (var reference in references)
+        {
+            if (!CellRangeParser.TryParseRange(reference, out var range))
+            {
+                continue;
+            }
+
+            foreach (var existing in ranges)
+            {
+                if (range.FirstColumn <= existing.LastColumn
+                    && range.LastColumn >= existing.FirstColumn
+                    && range.FirstRow <= existing.LastRow
+                    && range.LastRow >= existing.FirstRow)
+                {
+                    return true;
+                }
+            }
+
+            ranges.Add(range);
+        }
+
+        return false;
+    }
+
+    private static void AddOnce(List<string> blocks, string reason)
+    {
+        if (!blocks.Contains(reason))
+        {
+            blocks.Add(reason);
+        }
+    }
+}
