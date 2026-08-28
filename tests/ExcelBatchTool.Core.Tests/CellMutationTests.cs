@@ -835,6 +835,199 @@ public sealed class CellMutationTests
         Assert.Empty(Directory.GetFiles(dir.Root, "~ebt-*"));
     }
 
+    // ── D2. 取り消し(rollback)の結果を正確に伝える ────────
+
+    [Fact]
+    public void Execute_FailedMidBatch_SaysItRolledBackRatherThanNeverCreating()
+    {
+        using var dir = new TempDir();
+        var first = dir.File("大阪.xlsx");
+        var second = dir.File("京都.xlsx");
+        CreateWorkbook(first, Sheet("月報", Cell("B2", "未確認")));
+        CreateWorkbook(second, Sheet("月報", Cell("B2", "未確認")));
+
+        var before = new[] { Snapshot(first), Snapshot(second) };
+
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
+            CellReference = "B2",
+            WriteKind = CellWriteKind.Text,
+            TextValue = "確認済み",
+        });
+
+        // 2 ファイル目の控えファイルの置き場所をフォルダーで塞ぐ。1 ファイル目を確定した
+        // あとで失敗するので、確定済みのものまで取り消す必要がある。
+        Directory.CreateDirectory(dir.File("京都" + OutputSuffix + ".xlsx.audit.json"));
+
+        var result = new CellMutator().Execute(preview);
+
+        Assert.False(result.Success);
+        Assert.Contains("取り消しました", result.Message);
+        Assert.DoesNotContain("作成していません", result.Message);
+        Assert.Contains("元のファイルは変更していません", result.Message);
+
+        Assert.Empty(Directory.GetFiles(dir.Root, "*変更済み.xlsx"));
+        Assert.Empty(Directory.GetFiles(dir.Root, "*.audit.json"));
+        Assert.Empty(Directory.GetFiles(dir.Root, "~ebt-*"));
+        Assert.Equal(before, new[] { Snapshot(first), Snapshot(second) });
+    }
+
+    [Fact]
+    public void Execute_Cancelled_UsesTheSameRollbackWording()
+    {
+        using var dir = new TempDir();
+        var first = dir.File("大阪.xlsx");
+        var second = dir.File("京都.xlsx");
+        CreateWorkbook(first, Sheet("月報", Cell("B2", "未確認")));
+        CreateWorkbook(second, Sheet("月報", Cell("B2", "未確認")));
+
+        var before = new[] { Snapshot(first), Snapshot(second) };
+
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
+            CellReference = "B2",
+            WriteKind = CellWriteKind.Text,
+            TextValue = "確認済み",
+        });
+
+        // 1 ファイル目を作り終えた時点で中止する。
+        using var cancellation = new CancellationTokenSource();
+        var progress = new Progress<CellMutationProgress>(_ => cancellation.Cancel());
+
+        var result = new CellMutator().Execute(preview, progress, cancellation.Token);
+
+        Assert.False(result.Success);
+        Assert.Contains("中止しました", result.Message);
+        Assert.Contains("取り消しました", result.Message);
+        Assert.DoesNotContain("作成していません", result.Message);
+        Assert.Empty(Directory.GetFiles(dir.Root, "*変更済み*"));
+        Assert.Empty(Directory.GetFiles(dir.Root, "~ebt-*"));
+        Assert.Equal(before, new[] { Snapshot(first), Snapshot(second) });
+    }
+
+    [Fact]
+    public void Execute_FailureAfterAWorkbookWasCommitted_TakesTheCommittedFileBack()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        var before = Snapshot(path);
+        var preview = Preview(Request(path, "月報", "B2", CellWriteKind.Text, "確認済み"));
+
+        // 控えファイルの置き場所をフォルダーで塞ぐ。File.Exists は false のままなので
+        // 事前確認は通り、Workbook を確定したあとの控えファイル確定で失敗する。
+        Directory.CreateDirectory(dir.File("大阪" + OutputSuffix + ".xlsx.audit.json"));
+
+        var result = new CellMutator().Execute(preview);
+
+        Assert.False(result.Success);
+        Assert.Contains("取り消しました", result.Message);
+        Assert.DoesNotContain("作成していません", result.Message);
+
+        // いったん確定した Workbook も取り消されていること。
+        Assert.False(File.Exists(Output(dir, "大阪")));
+        Assert.Empty(Directory.GetFiles(dir.Root, "~ebt-*"));
+        Assert.Equal(before, Snapshot(path));
+    }
+
+    [Fact]
+    public void Execute_WhenTheCommittedWorkbookCannotBeDeleted_ReportsWhatRemains()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        var before = Snapshot(path);
+        var preview = Preview(Request(path, "月報", "B2", CellWriteKind.Text, "確認済み"));
+
+        Directory.CreateDirectory(dir.File("大阪" + OutputSuffix + ".xlsx.audit.json"));
+
+        // 確定済み Workbook だけ消せない状況(ロックされている等)を再現する。
+        var mutator = new CellMutator
+        {
+            FileDeleter = candidate => candidate.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
+                ? false
+                : CellMutator.TryDeleteFile(candidate),
+        };
+
+        var result = mutator.Execute(preview);
+
+        Assert.False(result.Success);
+        Assert.True(File.Exists(Output(dir, "大阪")));
+
+        // 消せていないのに「作成していません」と言い切らないこと。
+        Assert.DoesNotContain("作成していません", result.Message);
+        Assert.Contains("残っている可能性があります", result.Message);
+        Assert.Contains("大阪" + OutputSuffix + ".xlsx", result.Message);
+
+        // 表示するのはファイル名だけ。絶対パスは出さない。
+        Assert.DoesNotContain(dir.Root, result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(":\\", result.Message, StringComparison.Ordinal);
+
+        // 元ファイルについては引き続き断定してよい。
+        Assert.Contains("元のファイルは変更していません", result.Message);
+        Assert.Equal(before, Snapshot(path));
+    }
+
+    [Fact]
+    public void Execute_WhenOnlyAnAuditFileCannotBeDeleted_ReportsThatFile()
+    {
+        using var dir = new TempDir();
+        var first = dir.File("大阪.xlsx");
+        var second = dir.File("京都.xlsx");
+        CreateWorkbook(first, Sheet("月報", Cell("B2", "未確認")));
+        CreateWorkbook(second, Sheet("月報", Cell("B2", "未確認")));
+
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
+            CellReference = "B2",
+            WriteKind = CellWriteKind.Text,
+            TextValue = "確認済み",
+        });
+
+        // 2 ファイル目の控えファイルの確定で失敗させる。
+        // このとき 1 ファイル目は Workbook も控えも確定済みになっている。
+        Directory.CreateDirectory(dir.File("京都" + OutputSuffix + ".xlsx.audit.json"));
+
+        var mutator = new CellMutator
+        {
+            FileDeleter = candidate => candidate.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+                ? false
+                : CellMutator.TryDeleteFile(candidate),
+        };
+
+        var result = mutator.Execute(preview);
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain("作成していません", result.Message);
+        Assert.Contains("残っている可能性があります", result.Message);
+        Assert.Contains("大阪" + OutputSuffix + ".xlsx.audit.json", result.Message);
+        Assert.DoesNotContain(dir.Root, result.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Workbook 側は消せているので、残存として挙げない。
+        Assert.False(File.Exists(Output(dir, "大阪")));
+        Assert.False(File.Exists(Output(dir, "京都")));
+    }
+
+    [Fact]
+    public void Execute_SuccessMessage_IsUnchangedByTheRollbackWording()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        var result = Execute(Request(path, "月報", "B2", CellWriteKind.Text, "確認済み"));
+
+        Assert.True(result.Success);
+        Assert.Contains("元のファイルは変更していません", result.Message);
+        Assert.DoesNotContain("取り消しました", result.Message);
+        Assert.DoesNotContain("残っている可能性があります", result.Message);
+    }
+
     [Fact]
     public void Execute_OutputPassesTheOpenXmlValidatorAndReopens()
     {
