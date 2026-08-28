@@ -1,3 +1,4 @@
+using DocumentFormat.OpenXml.Spreadsheet;
 using ExcelBatchTool.Core.Merge;
 
 namespace ExcelBatchTool.Core.Aggregation;
@@ -85,11 +86,13 @@ public sealed class SheetAggregationPlanner
             var outputName = outputNames[index];
             var sheetBlocked = workbookBlocks.TryGetValue(selection.FilePath, out var reasons) && reasons.Count > 0;
             var visibility = SheetVisibility.Visible;
+            var printLayout = new PrintLayoutSummary();
 
             if (!sheetBlocked)
             {
                 var scan = WorksheetCopyScanner.ScanSheet(selection.FilePath, selection.SheetName, cancellationToken);
                 visibility = scan.Visibility;
+                printLayout = BuildPrintLayoutSummary(scan);
                 sheetBlocked = scan.IsBlocked;
 
                 foreach (var reason in scan.BlockReasons)
@@ -129,6 +132,7 @@ public sealed class SheetAggregationPlanner
                 SheetName = selection.SheetName,
                 OutputSheetName = outputName,
                 Visibility = visibility,
+                PrintLayout = printLayout,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });
@@ -145,6 +149,22 @@ public sealed class SheetAggregationPlanner
 
         return new SheetAggregationPreview { Sheets = sheets, Issues = issues };
     }
+
+    internal static PrintLayoutSummary BuildPrintLayoutSummary(SheetCopyScan scan) => new()
+    {
+        HasPageSetupProperties = scan.PageSetupProperties is not null,
+        HasPrintOptions = scan.PrintOptions is not null,
+        HasPageMargins = scan.PageMargins is not null,
+        HasPageSetup = scan.PageSetup is not null,
+        HasHeaderFooter = scan.HeaderFooter is not null,
+        RowBreakCount = scan.RowBreaks?.Elements<Break>().Count() ?? 0,
+        ColumnBreakCount = scan.ColumnBreaks?.Elements<Break>().Count() ?? 0,
+        PrintAreaRanges = RangesOf(scan, PrintDefinedNameKind.PrintArea),
+        PrintTitleRanges = RangesOf(scan, PrintDefinedNameKind.PrintTitles),
+    };
+
+    private static IReadOnlyList<string> RangesOf(SheetCopyScan scan, PrintDefinedNameKind kind)
+        => scan.PrintDefinedNames.FirstOrDefault(name => name.Kind == kind)?.Ranges ?? Array.Empty<string>();
 
     /// <summary>
     /// 出力シート名を決める。利用者が指定した名前はそのまま使い(勝手に置き換えない)、

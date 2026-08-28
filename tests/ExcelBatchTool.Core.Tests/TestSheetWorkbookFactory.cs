@@ -64,6 +64,30 @@ internal sealed class TestAggregationSheetSpec
     /// <summary>ふりがな設定(phoneticPr)を付ける。</summary>
     public bool AddPhoneticProperties { get; init; }
 
+    /// <summary>pageSetup にプリンター設定パートへの r:id を持たせる。</summary>
+    public bool AddPrinterSettings { get; init; }
+
+    /// <summary>ヘッダー・フッターの画像(drawingHF)を付ける。</summary>
+    public bool AddHeaderFooterDrawing { get; init; }
+
+    /// <summary>ヘッダー文字列に画像コード(&amp;G)を入れる。</summary>
+    public bool AddHeaderFooterImageCode { get; init; }
+
+    /// <summary>ヘッダー・フッターの奇数偶数・先頭ページ区別を有効にする。</summary>
+    public bool AddDistinctHeaderFooter { get; init; }
+
+    /// <summary>壊れた改ページ定義(位置 0)を入れる。</summary>
+    public bool AddBrokenBreak { get; init; }
+
+    /// <summary>_xlnm.Print_Area の参照文字列(シート名込み)。null なら作らない。</summary>
+    public string? PrintArea { get; init; }
+
+    /// <summary>_xlnm.Print_Titles の参照文字列(シート名込み)。null なら作らない。</summary>
+    public string? PrintTitles { get; init; }
+
+    /// <summary>このシートに固有の、印刷以外の名前定義。</summary>
+    public (string Name, string Reference)? LocalDefinedName { get; init; }
+
     /// <summary>セル値。string / int / double / bool / DateTime / Styled / null。</summary>
     public object?[][] Rows { get; init; } = [];
 
@@ -134,6 +158,44 @@ internal static class TestSheetWorkbookFactory
         foreach (var spec in sheets)
         {
             AddSheet(workbookPart, spec, sheetId++, sharedStrings, date1904);
+        }
+
+        // Defined Names は sheets の後ろ。localSheetId はシートの並び順。
+        var definedNames = new DefinedNames();
+        for (var index = 0; index < sheets.Count; index++)
+        {
+            var spec = sheets[index];
+            if (spec.PrintArea is { } printArea)
+            {
+                definedNames.Append(new DefinedName(printArea)
+                {
+                    Name = "_xlnm.Print_Area",
+                    LocalSheetId = (uint)index,
+                });
+            }
+
+            if (spec.PrintTitles is { } printTitles)
+            {
+                definedNames.Append(new DefinedName(printTitles)
+                {
+                    Name = "_xlnm.Print_Titles",
+                    LocalSheetId = (uint)index,
+                });
+            }
+
+            if (spec.LocalDefinedName is { } local)
+            {
+                definedNames.Append(new DefinedName(local.Reference)
+                {
+                    Name = local.Name,
+                    LocalSheetId = (uint)index,
+                });
+            }
+        }
+
+        if (definedNames.Any())
+        {
+            workbookPart.Workbook.AppendChild(definedNames);
         }
 
         if (sharedStrings.Count > 0)
@@ -376,20 +438,58 @@ internal static class TestSheetWorkbookFactory
 
         if (spec.AddPageSetup)
         {
-            children.Add(new PageSetup { PaperSize = 9U, Orientation = OrientationValues.Landscape });
+            var pageSetup = new PageSetup
+            {
+                PaperSize = 9U,
+                Orientation = OrientationValues.Landscape,
+                Scale = 85U,
+                FitToWidth = 1,
+                FitToHeight = 0,
+            };
+
+            if (spec.AddPrinterSettings)
+            {
+                var settingsPart = worksheetPart.AddNewPart<SpreadsheetPrinterSettingsPart>();
+                using (var settingsStream = new MemoryStream("架空のプリンター設定"u8.ToArray()))
+                {
+                    settingsPart.FeedData(settingsStream);
+                }
+
+                pageSetup.Id = worksheetPart.GetIdOfPart(settingsPart);
+            }
+
+            children.Add(pageSetup);
         }
 
         if (spec.AddHeaderFooter)
         {
-            children.Add(new HeaderFooter(new OddHeader("架空ヘッダー")));
+            var headerFooter = new HeaderFooter(
+                new OddHeader(spec.AddHeaderFooterImageCode ? "&L&G架空ヘッダー" : "&L架空ヘッダー"),
+                new OddFooter("&C架空フッター"));
+
+            if (spec.AddDistinctHeaderFooter)
+            {
+                headerFooter.DifferentOddEven = true;
+                headerFooter.DifferentFirst = true;
+                headerFooter.ScaleWithDoc = false;
+                headerFooter.AlignWithMargins = false;
+                headerFooter.Append(new EvenHeader("&R架空偶数ヘッダー"));
+                headerFooter.Append(new EvenFooter("&L架空偶数フッター"));
+                headerFooter.Append(new FirstHeader("&C架空先頭ヘッダー"));
+                headerFooter.Append(new FirstFooter("&R架空先頭フッター"));
+            }
+
+            children.Add(headerFooter);
         }
 
         if (spec.AddRowBreaks)
         {
-            children.Add(new RowBreaks(new Break { Id = 2U, Max = 16383U, ManualPageBreak = true })
+            children.Add(new RowBreaks(
+                new Break { Id = spec.AddBrokenBreak ? 0U : 2U, Max = 16383U, ManualPageBreak = true },
+                new Break { Id = 5U, Max = 16383U, ManualPageBreak = true })
             {
-                Count = 1U,
-                ManualBreakCount = 1U,
+                Count = 2U,
+                ManualBreakCount = 2U,
             });
         }
 
@@ -401,6 +501,7 @@ internal static class TestSheetWorkbookFactory
                 ManualBreakCount = 1U,
             });
         }
+
 
         var worksheet = new Worksheet();
         foreach (var child in children)
@@ -449,6 +550,14 @@ internal static class TestSheetWorkbookFactory
             }
 
             worksheet.Append(new Drawing { Id = worksheetPart.GetIdOfPart(drawingsPart) });
+        }
+
+        if (spec.AddHeaderFooterDrawing)
+        {
+            var headerFooterDrawingPart = worksheetPart.AddNewPart<DrawingsPart>();
+            headerFooterDrawingPart.WorksheetDrawing =
+                new DocumentFormat.OpenXml.Drawing.Spreadsheet.WorksheetDrawing();
+            worksheet.Append(new DrawingHeaderFooter { Id = worksheetPart.GetIdOfPart(headerFooterDrawingPart) });
         }
 
         if (spec.AddTable)

@@ -106,8 +106,10 @@ public sealed class SheetAggregator
 
         var styles = new OutputStylesheetBuilder();
         var sheets = new Sheets();
+        var definedNames = new DefinedNames();
         var themeCopied = false;
         var completed = 0;
+        var sheetIndex = 0;
         uint sheetId = 1;
 
         // 同じ Source を続けて処理するので、Workbook は必要なときだけ開き直す。
@@ -159,6 +161,19 @@ public sealed class SheetAggregator
 
                 sheets.Append(sheet);
 
+                // 印刷範囲・印刷タイトルは Workbook 側の Defined Name。
+                // シート名は出力名で組み立て直し、localSheetId は出力での並び順に合わせる。
+                foreach (var printName in scan.PrintDefinedNames)
+                {
+                    definedNames.Append(new DefinedName(
+                        PrintDefinedNameParser.Format(plan.OutputSheetName, printName.Ranges))
+                    {
+                        Name = PrintDefinedNameParser.NameOf(printName.Kind),
+                        LocalSheetId = (uint)sheetIndex,
+                    });
+                }
+
+                sheetIndex++;
                 completed++;
                 progress?.Report(new SheetAggregationProgress(completed, preview.Sheets.Count));
             }
@@ -172,7 +187,13 @@ public sealed class SheetAggregator
         stylesPart.Stylesheet = styles.Build();
         stylesPart.Stylesheet.Save();
 
+        // CT_Workbook では definedNames は sheets の後ろに置く。
         workbookPart.Workbook = new Workbook(sheets);
+        if (definedNames.Any())
+        {
+            workbookPart.Workbook.Append(definedNames);
+        }
+
         workbookPart.Workbook.Save();
     }
 
@@ -199,8 +220,17 @@ public sealed class SheetAggregator
         uint[] styleMap,
         CancellationToken cancellationToken)
     {
+        // CT_Worksheet の子要素順にしたがって書く(順序を崩すと Open XML の検証に落ちる)。
         using var writer = OpenXmlWriter.Create(worksheetPart);
         writer.WriteStartElement(new Worksheet());
+
+        if (scan.PageSetupProperties is { } pageSetupProperties)
+        {
+            writer.WriteElement(new SheetProperties
+            {
+                PageSetupProperties = (PageSetupProperties)pageSetupProperties.CloneNode(true),
+            });
+        }
 
         if (scan.DimensionReference is { } dimension)
         {
@@ -247,7 +277,71 @@ public sealed class SheetAggregator
             });
         }
 
+        // printOptions → pageMargins → pageSetup → headerFooter → rowBreaks → colBreaks の順。
+        if (scan.PrintOptions is { } printOptions)
+        {
+            writer.WriteElement((PrintOptions)printOptions.CloneNode(true));
+        }
+
+        if (scan.PageMargins is { } pageMargins)
+        {
+            writer.WriteElement((PageMargins)pageMargins.CloneNode(true));
+        }
+
+        if (scan.PageSetup is { } pageSetup)
+        {
+            writer.WriteElement((PageSetup)pageSetup.CloneNode(true));
+        }
+
+        if (scan.HeaderFooter is { } headerFooter)
+        {
+            writer.WriteElement((HeaderFooter)headerFooter.CloneNode(true));
+        }
+
+        if (CloneBreaks<RowBreaks>(scan.RowBreaks) is { } rowBreaks)
+        {
+            writer.WriteElement(rowBreaks);
+        }
+
+        if (CloneBreaks<ColumnBreaks>(scan.ColumnBreaks) is { } columnBreaks)
+        {
+            writer.WriteElement(columnBreaks);
+        }
+
         writer.WriteEndElement();
+    }
+
+    /// <summary>改ページ定義を写し、count / manualBreakCount を実際の内容に合わせ直す。</summary>
+    private static T? CloneBreaks<T>(OpenXmlCompositeElement? source)
+        where T : OpenXmlCompositeElement
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        var clone = (T)source.CloneNode(true);
+        var items = clone.Elements<Break>().ToList();
+        if (items.Count == 0)
+        {
+            return null;
+        }
+
+        var manual = (uint)items.Count(item => item.ManualPageBreak?.Value == true);
+        switch (clone)
+        {
+            case RowBreaks rows:
+                rows.Count = (uint)items.Count;
+                rows.ManualBreakCount = manual;
+                break;
+
+            case ColumnBreaks columns:
+                columns.Count = (uint)items.Count;
+                columns.ManualBreakCount = manual;
+                break;
+        }
+
+        return clone;
     }
 
     private static SheetViews BuildSheetViews(SheetCopyScan scan)
@@ -447,6 +541,16 @@ public sealed class SheetAggregator
                 {
                     return sheetError;
                 }
+
+                if (CheckPrintLayout(worksheetPart, expected) is { } printError)
+                {
+                    return printError;
+                }
+
+                if (CheckPrintDefinedNames(workbookPart, expected, index) is { } definedNameError)
+                {
+                    return definedNameError;
+                }
             }
 
             var validationErrors = new OpenXmlValidator().Validate(document).ToList();
@@ -464,6 +568,116 @@ public sealed class SheetAggregator
         {
             return ex.Message;
         }
+    }
+
+    /// <summary>印刷・ページレイアウト情報が想定どおり出力されているか確かめる。</summary>
+    private static string? CheckPrintLayout(WorksheetPart worksheetPart, SheetAggregationPlan expected)
+    {
+        var layout = expected.PrintLayout;
+        if (layout.IsEmpty)
+        {
+            return null;
+        }
+
+        var worksheet = worksheetPart.Worksheet;
+        if (worksheet is null)
+        {
+            return $"シート「{expected.OutputSheetName}」の内容を読み取れません。";
+        }
+
+        string? Mismatch(string what) =>
+            $"シート「{expected.OutputSheetName}」の{what}が出力されていません。";
+
+        if (layout.HasPageSetupProperties
+            && worksheet.GetFirstChild<SheetProperties>()?.PageSetupProperties is null)
+        {
+            return Mismatch("印刷の拡大縮小設定");
+        }
+
+        if (layout.HasPrintOptions && worksheet.GetFirstChild<PrintOptions>() is null)
+        {
+            return Mismatch("印刷オプション");
+        }
+
+        if (layout.HasPageMargins && worksheet.GetFirstChild<PageMargins>() is null)
+        {
+            return Mismatch("余白設定");
+        }
+
+        if (layout.HasPageSetup && worksheet.GetFirstChild<PageSetup>() is null)
+        {
+            return Mismatch("ページ設定");
+        }
+
+        if (layout.HasHeaderFooter && worksheet.GetFirstChild<HeaderFooter>() is null)
+        {
+            return Mismatch("ヘッダー・フッター");
+        }
+
+        var rowBreaks = worksheet.GetFirstChild<RowBreaks>()?.Elements<Break>().Count() ?? 0;
+        if (rowBreaks != layout.RowBreakCount)
+        {
+            return $"シート「{expected.OutputSheetName}」の行の改ページ数が想定と異なります"
+                + $"(想定 {layout.RowBreakCount} / 実際 {rowBreaks})。";
+        }
+
+        var columnBreaks = worksheet.GetFirstChild<ColumnBreaks>()?.Elements<Break>().Count() ?? 0;
+        if (columnBreaks != layout.ColumnBreakCount)
+        {
+            return $"シート「{expected.OutputSheetName}」の列の改ページ数が想定と異なります"
+                + $"(想定 {layout.ColumnBreakCount} / 実際 {columnBreaks})。";
+        }
+
+        return null;
+    }
+
+    /// <summary>印刷範囲・印刷タイトルが、出力シート名と出力の並び順で作られているか確かめる。</summary>
+    private static string? CheckPrintDefinedNames(
+        WorkbookPart workbookPart,
+        SheetAggregationPlan expected,
+        int outputSheetIndex)
+    {
+        var definedNames = workbookPart.Workbook?.DefinedNames?.Elements<DefinedName>().ToList() ?? [];
+
+        foreach (var (kind, ranges) in new[]
+        {
+            (PrintDefinedNameKind.PrintArea, expected.PrintLayout.PrintAreaRanges),
+            (PrintDefinedNameKind.PrintTitles, expected.PrintLayout.PrintTitleRanges),
+        })
+        {
+            var name = PrintDefinedNameParser.NameOf(kind);
+            var matches = definedNames
+                .Where(definedName => definedName.Name?.Value == name
+                    && definedName.LocalSheetId?.Value == (uint)outputSheetIndex)
+                .ToList();
+
+            if (ranges.Count == 0)
+            {
+                if (matches.Count > 0)
+                {
+                    return $"シート「{expected.OutputSheetName}」に想定していない"
+                        + $"{PrintDefinedNameParser.DisplayNameOf(kind)}が出力されています。";
+                }
+
+                continue;
+            }
+
+            if (matches.Count != 1)
+            {
+                return $"シート「{expected.OutputSheetName}」の"
+                    + $"{PrintDefinedNameParser.DisplayNameOf(kind)}が正しく出力されていません。";
+            }
+
+            var wanted = PrintDefinedNameParser.Format(expected.OutputSheetName, ranges);
+            if (!string.Equals(matches[0].Text, wanted, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」の"
+                    + $"{PrintDefinedNameParser.DisplayNameOf(kind)}が想定と異なります"
+                    + $"(想定「{wanted}」/ 実際「{matches[0].Text}」)。";
+            }
+        }
+
+        return null;
     }
 
     private static string? CheckWorksheet(WorksheetPart worksheetPart, SheetAggregationPlan expected, int cellFormatCount)
