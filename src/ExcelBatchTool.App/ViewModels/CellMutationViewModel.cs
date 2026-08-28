@@ -189,6 +189,12 @@ public sealed class CellMutationViewModel : ObservableObject, IRecipeHost
     private bool _lastRunSucceeded;
     private MutationOperationViewModel? _selectedOperation;
 
+    /// <summary>
+    /// 最後に正常終了した実行で使った設定。保存してよいかの判断だけに使い、
+    /// ファイルには残さない(アプリを閉じると消える)。
+    /// </summary>
+    private SavedRecipe? _lastSuccessfulRecipe;
+
     public CellMutationViewModel()
         : this(ReadClipboardText)
     {
@@ -432,6 +438,10 @@ public sealed class CellMutationViewModel : ObservableObject, IRecipeHost
 
         IsBusy = true;
         StatusText = "変更したファイルを作成しています…";
+
+        // 実行の途中で画面を触られても、確認済みなのは「実際に流した設定」なので、
+        // ここで控えておく。
+        var executed = BuildRecipe(string.Empty);
         try
         {
             var preview = _preview;
@@ -446,8 +456,11 @@ public sealed class CellMutationViewModel : ObservableObject, IRecipeHost
 
             if (result.Success)
             {
+                _lastSuccessfulRecipe = executed;
+
                 // 作った直後に同じ指定で押し直せないよう、プレビューを作り直させる。
                 IsPreviewStale = true;
+                Recipes.ShowSavableAfterRun();
             }
         }
         catch (Exception ex)
@@ -601,10 +614,17 @@ public sealed class CellMutationViewModel : ObservableObject, IRecipeHost
 
     RecipeType IRecipeHost.RecipeType => RecipeType.CellInputSet;
 
-    string? IRecipeHost.RecipeSaveBlockedReason => RecipeSaveGuard.ReasonFor(_preview, IsPreviewStale);
+    string? IRecipeHost.RecipeSaveBlockedReason
+        => RecipeSaveGuard.ReasonFor(_preview, IsPreviewStale, MatchesLastSuccessfulRun);
+
+    /// <summary>今の設定が、最後に正常終了した実行で使った設定とまったく同じか。</summary>
+    private bool MatchesLastSuccessfulRun
+        => RecipeConfiguration.AreSame(_lastSuccessfulRecipe, BuildRecipe(string.Empty));
 
     /// <summary>今の入力セットをレシピにする。対象のファイル・シートは含めない。</summary>
-    SavedRecipe IRecipeHost.CreateRecipe(string name) => new()
+    SavedRecipe IRecipeHost.CreateRecipe(string name) => BuildRecipe(name);
+
+    private SavedRecipe BuildRecipe(string name) => new()
     {
         Name = name,
         Type = RecipeType.CellInputSet,

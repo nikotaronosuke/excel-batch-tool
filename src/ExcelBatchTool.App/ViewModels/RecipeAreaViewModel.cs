@@ -6,7 +6,7 @@ namespace ExcelBatchTool.App.ViewModels;
 
 /// <summary>
 /// 「壊れた設定」を保存しにくくするための共通判定。
-/// 最新のプレビューがあり、実行できない問題が無いときだけ保存できる。
+/// 最新のプレビューで問題が無いか、直前の正常終了と同じ設定のときだけ保存できる。
 /// </summary>
 internal static class RecipeSaveGuard
 {
@@ -14,8 +14,19 @@ internal static class RecipeSaveGuard
 
     public const string BlockedReason = "実行できない問題があるため、この設定は保存できません。";
 
-    public static string? ReasonFor(CellMutationPreview? preview, bool isStale)
+    /// <param name="matchesLastSuccessfulRun">
+    /// 今の設定が、最後に正常終了した実行で使った設定とまったく同じか。
+    /// 作ったばかりの出力があるとプレビューは同名衝突で止まるが、その実行で
+    /// すでに確かめ済みの設定なので、保存だけは認める。
+    /// </param>
+    public static string? ReasonFor(
+        CellMutationPreview? preview, bool isStale, bool matchesLastSuccessfulRun)
     {
+        if (matchesLastSuccessfulRun)
+        {
+            return null;
+        }
+
         if (preview is null || isStale)
         {
             return StaleReason;
@@ -146,6 +157,16 @@ public sealed class RecipeAreaViewModel : ObservableObject
         get => _isMessageError;
         private set => SetProperty(ref _isMessageError, value);
     }
+
+    /// <summary>
+    /// 実行が正常終了した直後に、その設定を残せることを知らせる。
+    /// 保存そのものは行わない(利用者が名前を入れて押したときだけ保存する)。
+    /// </summary>
+    internal void ShowSavableAfterRun()
+        => SetMessage(
+            "今回使った設定は、処理設定として保存できます。"
+                + "名前を入れて「現在の設定を保存」を押してください。",
+            isError: false);
 
     /// <summary>保存済みの一覧をファイルから読み直す。</summary>
     public void Reload()

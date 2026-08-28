@@ -111,7 +111,7 @@ internal sealed class SourceFileKindConverter : JsonConverter<SourceFileKind>
 }
 
 /// <summary>「4. セルをまとめて変更」で保存する 1 行。</summary>
-public sealed class RecipeOperation
+public sealed record RecipeOperation
 {
     /// <summary>変更する位置(A1 形式の単一セル)。</summary>
     public string Cell { get; init; } = string.Empty;
@@ -124,7 +124,7 @@ public sealed class RecipeOperation
 }
 
 /// <summary>「5. 表から転記」で保存する対応付けの 1 行。</summary>
-public sealed class RecipeCellMapping
+public sealed record RecipeCellMapping
 {
     public string SourceColumn { get; init; } = string.Empty;
 
@@ -135,7 +135,7 @@ public sealed class RecipeCellMapping
 }
 
 /// <summary>「6. 表を突合して更新」で保存する対応付けの 1 行。</summary>
-public sealed class RecipeColumnMapping
+public sealed record RecipeColumnMapping
 {
     public string SourceColumn { get; init; } = string.Empty;
 
@@ -145,7 +145,7 @@ public sealed class RecipeColumnMapping
 }
 
 /// <summary>「4. セルをまとめて変更」の設定。対象のファイル・シートは含まない。</summary>
-public sealed class CellInputSetRecipe
+public sealed record CellInputSetRecipe
 {
     public IReadOnlyList<RecipeOperation> Operations { get; init; } = [];
 
@@ -153,7 +153,7 @@ public sealed class CellInputSetRecipe
 }
 
 /// <summary>「5. 表から転記」の設定。データ元・転記先のファイルは含まない。</summary>
-public sealed class SourceToFixedCellsRecipe
+public sealed record SourceToFixedCellsRecipe
 {
     public SourceFileKind SourceFileKind { get; init; }
 
@@ -174,7 +174,7 @@ public sealed class SourceToFixedCellsRecipe
 }
 
 /// <summary>「6. 表を突合して更新」の設定。データ元・転記先のファイルは含まない。</summary>
-public sealed class SourceTableToTargetTableRecipe
+public sealed record SourceTableToTargetTableRecipe
 {
     public SourceFileKind SourceFileKind { get; init; }
 
@@ -224,7 +224,7 @@ public sealed record SavedRecipe
 }
 
 /// <summary>レシピファイル全体。</summary>
-public sealed class RecipeDocument
+public sealed record RecipeDocument
 {
     public int SchemaVersion { get; init; }
 
