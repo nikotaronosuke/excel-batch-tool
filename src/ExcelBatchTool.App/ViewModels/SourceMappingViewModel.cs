@@ -128,6 +128,12 @@ public sealed class SourceMappingViewModel : ObservableObject, IRecipeHost
     private bool _lastRunSucceeded;
     private SourceMappingRowViewModel? _selectedMapping;
 
+    /// <summary>
+    /// 最後に正常終了した実行で使った設定。保存してよいかの判断だけに使い、
+    /// ファイルには残さない(アプリを閉じると消える)。
+    /// </summary>
+    private SavedRecipe? _lastSuccessfulRecipe;
+
     public SourceMappingViewModel()
         : this(() => null)
     {
@@ -594,6 +600,10 @@ public sealed class SourceMappingViewModel : ObservableObject, IRecipeHost
 
         IsBusy = true;
         StatusText = "転記したファイルを作成しています…";
+
+        // 実行の途中で画面を触られても、確認済みなのは「実際に流した設定」なので、
+        // ここで控えておく。
+        var executed = BuildRecipe(string.Empty);
         try
         {
             var preview = _preview;
@@ -608,7 +618,9 @@ public sealed class SourceMappingViewModel : ObservableObject, IRecipeHost
 
             if (result.Success)
             {
+                _lastSuccessfulRecipe = executed;
                 IsPreviewStale = true;
+                Recipes.ShowSavableAfterRun();
             }
         }
         catch (Exception ex)
@@ -653,10 +665,17 @@ public sealed class SourceMappingViewModel : ObservableObject, IRecipeHost
 
     RecipeType IRecipeHost.RecipeType => RecipeType.SourceToFixedCells;
 
-    string? IRecipeHost.RecipeSaveBlockedReason => RecipeSaveGuard.ReasonFor(_preview, IsPreviewStale);
+    string? IRecipeHost.RecipeSaveBlockedReason
+        => RecipeSaveGuard.ReasonFor(_preview, IsPreviewStale, MatchesLastSuccessfulRun);
+
+    /// <summary>今の設定が、最後に正常終了した実行で使った設定とまったく同じか。</summary>
+    private bool MatchesLastSuccessfulRun
+        => RecipeConfiguration.AreSame(_lastSuccessfulRecipe, BuildRecipe(string.Empty));
 
     /// <summary>今の指定をレシピにする。データ元・転記先のファイルは含めない。</summary>
-    SavedRecipe IRecipeHost.CreateRecipe(string name)
+    SavedRecipe IRecipeHost.CreateRecipe(string name) => BuildRecipe(name);
+
+    private SavedRecipe BuildRecipe(string name)
     {
         // 保存できるのは「問題なくプレビューできた設定」だけなので、ここでは種類が分かっている。
         var kind = SourceMappingPlanner.KindOf(SourceFilePath) ?? SourceFileKind.Xlsx;
