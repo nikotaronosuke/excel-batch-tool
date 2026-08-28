@@ -77,6 +77,14 @@ public sealed class SheetAggregationPlanner
         var usedNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var sheets = new List<SheetAggregationPlan>(selections.Count);
 
+        // ブック内リンクの参照先を解決するための「元シート → 出力シート名」表。
+        var outputNameBySourceSheet = new Dictionary<(string File, string Sheet), string>();
+        for (var index = 0; index < selections.Count; index++)
+        {
+            var key = (NormalizePath(selections[index].FilePath), selections[index].SheetName);
+            outputNameBySourceSheet[key] = outputNames[index];
+        }
+
         for (var index = 0; index < selections.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -87,6 +95,7 @@ public sealed class SheetAggregationPlanner
             var sheetBlocked = workbookBlocks.TryGetValue(selection.FilePath, out var reasons) && reasons.Count > 0;
             var visibility = SheetVisibility.Visible;
             var printLayout = new PrintLayoutSummary();
+            IReadOnlyList<ResolvedHyperlink> hyperlinks = Array.Empty<ResolvedHyperlink>();
 
             if (!sheetBlocked)
             {
@@ -94,6 +103,9 @@ public sealed class SheetAggregationPlanner
                 visibility = scan.Visibility;
                 printLayout = BuildPrintLayoutSummary(scan);
                 sheetBlocked = scan.IsBlocked;
+
+                hyperlinks = ResolveHyperlinks(
+                    scan, selection, outputNameBySourceSheet, fileName, issues, ref sheetBlocked);
 
                 foreach (var reason in scan.BlockReasons)
                 {
@@ -133,6 +145,7 @@ public sealed class SheetAggregationPlanner
                 OutputSheetName = outputName,
                 Visibility = visibility,
                 PrintLayout = printLayout,
+                Hyperlinks = hyperlinks,
                 IsBlocked = sheetBlocked,
                 Order = index + 1,
             });
@@ -148,6 +161,83 @@ public sealed class SheetAggregationPlanner
         }
 
         return new SheetAggregationPreview { Sheets = sheets, Issues = issues };
+    }
+
+    /// <summary>
+    /// ハイパーリンクを出力用に解決する。ブック内リンクは参照先シートの出力名で
+    /// 組み立て直し、参照先が集約対象に無ければ黙って落とさず Block する。
+    /// </summary>
+    private static List<ResolvedHyperlink> ResolveHyperlinks(
+        SheetCopyScan scan,
+        SheetSelection selection,
+        Dictionary<(string File, string Sheet), string> outputNameBySourceSheet,
+        string fileName,
+        List<MergeIssue> issues,
+        ref bool sheetBlocked)
+    {
+        var resolved = new List<ResolvedHyperlink>(scan.Hyperlinks.Count);
+
+        foreach (var link in scan.Hyperlinks)
+        {
+            if (link.BlockReason is { } reason)
+            {
+                issues.Add(new MergeIssue(
+                    MergeIssueSeverity.Block,
+                    $"セル {link.Reference}: {reason}",
+                    fileName,
+                    selection.SheetName));
+                sheetBlocked = true;
+                continue;
+            }
+
+            if (link.Kind == HyperlinkKind.InternalOtherSheet)
+            {
+                var key = (NormalizePath(selection.FilePath), link.TargetSheetName!);
+                if (!outputNameBySourceSheet.TryGetValue(key, out var targetOutputName))
+                {
+                    issues.Add(new MergeIssue(
+                        MergeIssueSeverity.Block,
+                        $"セル {link.Reference}: リンク先の「{link.TargetSheetName}」シートが"
+                            + "集約対象に含まれていないため、リンクを安全に維持できません。",
+                        fileName,
+                        selection.SheetName));
+                    sheetBlocked = true;
+                    continue;
+                }
+
+                resolved.Add(new ResolvedHyperlink
+                {
+                    Reference = link.Reference,
+                    Location = $"{SheetReferenceSyntax.Quote(targetOutputName)}!{link.Location}",
+                    Tooltip = link.Tooltip,
+                    Display = link.Display,
+                });
+                continue;
+            }
+
+            resolved.Add(new ResolvedHyperlink
+            {
+                Reference = link.Reference,
+                ExternalTarget = link.ExternalTarget,
+                Location = link.Location,
+                Tooltip = link.Tooltip,
+                Display = link.Display,
+            });
+        }
+
+        return resolved;
+    }
+
+    private static string NormalizePath(string filePath)
+    {
+        try
+        {
+            return Path.GetFullPath(filePath).ToLowerInvariant();
+        }
+        catch (Exception)
+        {
+            return filePath.ToLowerInvariant();
+        }
     }
 
     internal static PrintLayoutSummary BuildPrintLayoutSummary(SheetCopyScan scan) => new()

@@ -69,6 +69,9 @@ internal sealed class SheetCopyScan
     /// <summary>印刷範囲・印刷タイトル(シート名を除いた範囲部分)。</summary>
     public IReadOnlyList<PrintDefinedNameInfo> PrintDefinedNames { get; init; }
         = Array.Empty<PrintDefinedNameInfo>();
+
+    /// <summary>ハイパーリンク。別シート宛の解決は Planner が行う。</summary>
+    public IReadOnlyList<HyperlinkInfo> Hyperlinks { get; init; } = Array.Empty<HyperlinkInfo>();
 }
 
 /// <summary>解析済みの印刷範囲・印刷タイトル。範囲はシート名を含まない。</summary>
@@ -244,6 +247,7 @@ internal static class WorksheetCopyScanner
         SheetProtection? protection = null;
         var mergeReferences = new List<string>();
 
+        var hyperlinks = new List<HyperlinkInfo>();
         PageSetupProperties? pageSetupProperties = null;
         PrintOptions? printOptions = null;
         PageMargins? pageMargins = null;
@@ -333,7 +337,8 @@ internal static class WorksheetCopyScanner
                 }
                 else if (type == typeof(Hyperlink))
                 {
-                    AddOnce(blocks, "ハイパーリンクを含むため、Phase 1B.1 では集約できません。");
+                    var hyperlink = (Hyperlink)reader.LoadCurrentElement()!;
+                    hyperlinks.Add(HyperlinkScanner.Scan(hyperlink, sheetName, worksheetPart));
                 }
                 else if (type == typeof(AutoFilter))
                 {
@@ -452,6 +457,7 @@ internal static class WorksheetCopyScanner
             RowBreaks = rowBreaks,
             ColumnBreaks = columnBreaks,
             PrintDefinedNames = printDefinedNames,
+            Hyperlinks = hyperlinks,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,

@@ -38,6 +38,27 @@ public sealed record PrintLayoutSummary
         && !HasPrintArea && !HasPrintTitles;
 }
 
+/// <summary>
+/// 出力へ書き込む準備が整ったハイパーリンク 1 件。
+/// 別シート宛のリンク先は、出力シート名で組み立て直したあとの文字列。
+/// </summary>
+public sealed record ResolvedHyperlink
+{
+    public required string Reference { get; init; }
+
+    /// <summary>Web / メールへの外部リンクの絶対 URI。内部リンクでは null。</summary>
+    public string? ExternalTarget { get; init; }
+
+    /// <summary>内部リンクの参照先、または外部リンクの文書内アンカー。</summary>
+    public string? Location { get; init; }
+
+    public string? Tooltip { get; init; }
+
+    public string? Display { get; init; }
+
+    public bool IsExternal => ExternalTarget is not null;
+}
+
 /// <summary>集約対象 1 件分の計画。</summary>
 public sealed class SheetAggregationPlan
 {
@@ -72,6 +93,9 @@ public sealed class SheetAggregationPlan
 
     /// <summary>出力へ引き継ぐ印刷・ページレイアウト情報。</summary>
     public PrintLayoutSummary PrintLayout { get; init; } = new();
+
+    /// <summary>出力へ引き継ぐハイパーリンク(リンク先は解決済み)。</summary>
+    public IReadOnlyList<ResolvedHyperlink> Hyperlinks { get; init; } = Array.Empty<ResolvedHyperlink>();
 
     public string SourceDisplay => $"{FileName} / {SheetName}";
 }

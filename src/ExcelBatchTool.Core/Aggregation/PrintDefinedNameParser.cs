@@ -20,10 +20,6 @@ internal static partial class PrintDefinedNameParser
     public const string PrintAreaName = "_xlnm.Print_Area";
     public const string PrintTitlesName = "_xlnm.Print_Titles";
 
-    /// <summary>引用符なしのシート名には現れない文字(数式との判別に使う)。</summary>
-    private static readonly System.Buffers.SearchValues<char> FormulaLikeCharacters =
-        System.Buffers.SearchValues.Create("()+-*/^&%<>=\"; ");
-
     /// <summary>$A$1 または $A$1:$F$100(印刷範囲)。</summary>
     [GeneratedRegex(@"^\$[A-Za-z]{1,3}\$[0-9]{1,7}(:\$[A-Za-z]{1,3}\$[0-9]{1,7})?$")]
     private static partial Regex AreaPattern();
@@ -119,13 +115,8 @@ internal static partial class PrintDefinedNameParser
     public static string Format(string outputSheetName, IEnumerable<string> ranges)
         => string.Join(",", ranges.Select(range => $"{QuoteSheetName(outputSheetName)}!{range}"));
 
-    /// <summary>
-    /// シート名を参照内で使える形にする。Excel の規則にしたがい、
-    /// アポストロフィは 2 つ重ねてエスケープし、全体を引用符で囲む
-    /// (引用は常に付けてよいので、囲むかどうかの判定はしない)。
-    /// </summary>
-    public static string QuoteSheetName(string sheetName)
-        => $"'{sheetName.Replace("'", "''", StringComparison.Ordinal)}'";
+    /// <summary>シート名を参照内で使える形にする(共通処理へ委譲)。</summary>
+    public static string QuoteSheetName(string sheetName) => SheetReferenceSyntax.Quote(sheetName);
 
     /// <summary>引用符の外側にあるカンマだけで区切る。</summary>
     private static List<string> SplitTopLevel(string reference)
@@ -173,73 +164,24 @@ internal static partial class PrintDefinedNameParser
         out string range,
         out string? error)
     {
-        sheetName = string.Empty;
-        range = string.Empty;
         error = null;
 
-        if (text[0] == '\'')
+        if (SheetReferenceSyntax.TrySplit(text, out sheetName, out range, out var problem))
         {
-            var builder = new StringBuilder();
-            var index = 1;
-            var closed = false;
-
-            while (index < text.Length)
-            {
-                if (text[index] == '\'')
-                {
-                    if (index + 1 < text.Length && text[index + 1] == '\'')
-                    {
-                        builder.Append('\'');
-                        index += 2;
-                        continue;
-                    }
-
-                    closed = true;
-                    index++;
-                    break;
-                }
-
-                builder.Append(text[index]);
-                index++;
-            }
-
-            if (!closed || index >= text.Length || text[index] != '!')
-            {
-                error = $"{DisplayNameOf(kind)}の参照を解釈できません({text})。";
-                return false;
-            }
-
-            sheetName = builder.ToString();
-            range = text[(index + 1)..];
             return true;
         }
 
-        var separator = text.IndexOf('!', StringComparison.Ordinal);
-        if (separator <= 0)
+        error = problem switch
         {
-            error = $"{DisplayNameOf(kind)}の参照にシート名がありません({text})。";
-            return false;
-        }
+            SheetReferenceProblem.ThreeDimensional =>
+                $"{DisplayNameOf(kind)}が複数シートにまたがって参照しているため、"
+                    + "現在のバージョンでは集約できません。",
+            _ when !SheetReferenceSyntax.HasSheetName(text) =>
+                $"{DisplayNameOf(kind)}の参照にシート名がありません({text})。",
+            _ => $"{DisplayNameOf(kind)}の参照を解釈できません({text})。",
+        };
 
-        sheetName = text[..separator];
-        range = text[(separator + 1)..];
-
-        if (sheetName.Contains(':'))
-        {
-            error = $"{DisplayNameOf(kind)}が複数シートにまたがって参照しているため、"
-                + "現在のバージョンでは集約できません。";
-            return false;
-        }
-
-        // 引用符なしのシート名に使えない文字があれば、単純な範囲参照ではない
-        // (数式など)と判断する。
-        if (sheetName.AsSpan().IndexOfAny(FormulaLikeCharacters) >= 0)
-        {
-            error = $"{DisplayNameOf(kind)}の参照を解釈できません({text})。";
-            return false;
-        }
-
-        return true;
+        return false;
     }
 
     private static bool IsSupportedRange(string range, PrintDefinedNameKind kind) => kind switch

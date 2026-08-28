@@ -145,7 +145,12 @@ public sealed class SheetAggregator
                     ?? throw new InvalidOperationException($"{plan.SourceDisplay}: ワークシートが見つかりません。");
 
                 var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
-                WriteWorksheet(worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, cancellationToken);
+
+                // 外部リンクは出力側で relationship を張り直す(Source の r:id は使わない)。
+                var hyperlinks = BuildHyperlinks(worksheetPart, plan.Hyperlinks);
+
+                WriteWorksheet(
+                    worksheetPart, sourceWorksheetPart, current.Context, scan, styleMap, hyperlinks, cancellationToken);
 
                 var sheet = new Sheet
                 {
@@ -212,12 +217,59 @@ public sealed class SheetAggregator
         themePart.FeedData(source);
     }
 
+    /// <summary>
+    /// 出力 WorksheetPart 用のハイパーリンク要素を作る。外部リンクは
+    /// 出力側に新しい HyperlinkRelationship を作り、その r:id を設定する。
+    /// </summary>
+    private static Hyperlinks? BuildHyperlinks(
+        WorksheetPart worksheetPart,
+        IReadOnlyList<ResolvedHyperlink> resolved)
+    {
+        if (resolved.Count == 0)
+        {
+            return null;
+        }
+
+        var hyperlinks = new Hyperlinks();
+        foreach (var link in resolved)
+        {
+            var element = new Hyperlink { Reference = link.Reference };
+
+            if (link.ExternalTarget is { } target)
+            {
+                var relationship = worksheetPart.AddHyperlinkRelationship(
+                    new Uri(target, UriKind.Absolute), isExternal: true);
+                element.Id = relationship.Id;
+            }
+
+            if (!string.IsNullOrEmpty(link.Location))
+            {
+                element.Location = link.Location;
+            }
+
+            if (!string.IsNullOrEmpty(link.Tooltip))
+            {
+                element.Tooltip = link.Tooltip;
+            }
+
+            if (!string.IsNullOrEmpty(link.Display))
+            {
+                element.Display = link.Display;
+            }
+
+            hyperlinks.Append(element);
+        }
+
+        return hyperlinks;
+    }
+
     private static void WriteWorksheet(
         WorksheetPart worksheetPart,
         WorksheetPart sourceWorksheetPart,
         WorkbookReadContext context,
         SheetCopyScan scan,
         uint[] styleMap,
+        Hyperlinks? hyperlinks,
         CancellationToken cancellationToken)
     {
         // CT_Worksheet の子要素順にしたがって書く(順序を崩すと Open XML の検証に落ちる)。
@@ -275,6 +327,12 @@ public sealed class SheetAggregator
             {
                 Count = (uint)scan.MergeReferences.Count,
             });
+        }
+
+        // hyperlinks は mergeCells より後、printOptions より前。
+        if (hyperlinks is not null)
+        {
+            writer.WriteElement(hyperlinks);
         }
 
         // printOptions → pageMargins → pageSetup → headerFooter → rowBreaks → colBreaks の順。
@@ -551,6 +609,11 @@ public sealed class SheetAggregator
                 {
                     return definedNameError;
                 }
+
+                if (CheckHyperlinks(worksheetPart, expected) is { } hyperlinkError)
+                {
+                    return hyperlinkError;
+                }
             }
 
             var validationErrors = new OpenXmlValidator().Validate(document).ToList();
@@ -569,6 +632,79 @@ public sealed class SheetAggregator
             return ex.Message;
         }
     }
+
+    /// <summary>ハイパーリンクが想定どおり出力され、外部リンクの参照先が一致するか確かめる。</summary>
+    private static string? CheckHyperlinks(WorksheetPart worksheetPart, SheetAggregationPlan expected)
+    {
+        var written = worksheetPart.Worksheet?.GetFirstChild<Hyperlinks>()?.Elements<Hyperlink>().ToList() ?? [];
+
+        if (written.Count != expected.Hyperlinks.Count)
+        {
+            return $"シート「{expected.OutputSheetName}」のリンク数が想定と異なります"
+                + $"(想定 {expected.Hyperlinks.Count} / 実際 {written.Count})。";
+        }
+
+        for (var index = 0; index < written.Count; index++)
+        {
+            var actual = written[index];
+            var wanted = expected.Hyperlinks[index];
+
+            if (!string.Equals(actual.Reference?.Value, wanted.Reference, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」のリンク位置が想定と異なります"
+                    + $"(想定 {wanted.Reference} / 実際 {actual.Reference?.Value})。";
+            }
+
+            if (!string.Equals(actual.Location?.Value, NullIfEmpty(wanted.Location), StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} のリンク先が想定と異なります"
+                    + $"(想定「{wanted.Location}」/ 実際「{actual.Location?.Value}」)。";
+            }
+
+            if (!string.Equals(actual.Tooltip?.Value, NullIfEmpty(wanted.Tooltip), StringComparison.Ordinal)
+                || !string.Equals(actual.Display?.Value, NullIfEmpty(wanted.Display), StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} のリンク表示設定が"
+                    + "想定と異なります。";
+            }
+
+            if (!wanted.IsExternal)
+            {
+                if (actual.Id?.Value is not null)
+                {
+                    return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} に"
+                        + "不要な外部リンク参照が出力されています。";
+                }
+
+                continue;
+            }
+
+            if (actual.Id?.Value is not { } relationshipId)
+            {
+                return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} の"
+                    + "外部リンク参照が出力されていません。";
+            }
+
+            var relationship = worksheetPart.HyperlinkRelationships
+                .FirstOrDefault(item => string.Equals(item.Id, relationshipId, StringComparison.Ordinal));
+
+            if (relationship is null || !relationship.IsExternal)
+            {
+                return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} の"
+                    + "外部リンク参照が解決できません。";
+            }
+
+            if (!string.Equals(relationship.Uri?.OriginalString, wanted.ExternalTarget, StringComparison.Ordinal))
+            {
+                return $"シート「{expected.OutputSheetName}」のセル {wanted.Reference} のリンク先が想定と異なります"
+                    + $"(想定「{wanted.ExternalTarget}」/ 実際「{relationship.Uri?.OriginalString}」)。";
+            }
+        }
+
+        return null;
+    }
+
+    private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
 
     /// <summary>印刷・ページレイアウト情報が想定どおり出力されているか確かめる。</summary>
     private static string? CheckPrintLayout(WorksheetPart worksheetPart, SheetAggregationPlan expected)
