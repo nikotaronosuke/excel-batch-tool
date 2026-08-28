@@ -367,10 +367,14 @@ public sealed class SheetAggregationDataValidationTests
         Assert.Contains(preview.Blocks, issue => issue.Message.Contains("対応していない設定"));
     }
 
+    /// <summary>
+    /// Phase 1B.2B2B で x14 リスト入力規則に対応したが、参照先シート(Sheet2)が
+    /// 集約対象に無いため引き続き Block される(理由は「参照先が対象外」に変わる)。
+    /// </summary>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Preview_X14DataValidation_IsBlocked(bool alsoStandard)
+    public void Preview_X14DataValidationPointingOutsideTheSelection_IsBlocked(bool alsoStandard)
     {
         using var dir = new TempDir();
         var path = dir.File("A.xlsx");
@@ -390,7 +394,7 @@ public sealed class SheetAggregationDataValidationTests
         var preview = CreatePreview((path, "入力欄"));
 
         Assert.False(preview.CanExecute);
-        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("新しい形式の入力規則"));
+        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("集約対象に含まれていない"));
     }
 
     [Fact]

@@ -18,6 +18,15 @@ internal sealed record DataValidationInfo
     public string? BlockReason { get; init; }
 
     public string Sqref { get; init; } = string.Empty;
+
+    /// <summary>候補一覧を名前定義で指定している場合のその名前。</summary>
+    public string? DefinedName { get; init; }
+
+    /// <summary>名前定義の参照先シート名(元ブック内)。</summary>
+    public string? TargetSheetName { get; init; }
+
+    /// <summary>名前定義の参照範囲(シート名を除いた部分)。</summary>
+    public string? TargetRange { get; init; }
 }
 
 /// <summary>
@@ -48,7 +57,10 @@ internal static partial class DataValidationScanner
     private static partial Regex AbsoluteRangePattern();
 
     /// <summary>入力規則 1 件を解析する。</summary>
-    public static DataValidationInfo Scan(DataValidation validation, bool sourceIsDate1904)
+    public static DataValidationInfo Scan(
+        DataValidation validation,
+        bool sourceIsDate1904,
+        WorkbookDefinedNameIndex definedNames)
     {
         var sqref = validation.SequenceOfReferences?.InnerText ?? string.Empty;
 
@@ -112,9 +124,7 @@ internal static partial class DataValidationScanner
                 return Blocked(sqref, $"セル {sqref} のリスト入力規則の構造が想定と異なります。");
             }
 
-            return ValidateListSource(formula1, sqref) is { } listError
-                ? Blocked(sqref, listError)
-                : Supported(validation, sqref);
+            return ResolveListSource(validation, formula1, sqref, definedNames);
         }
 
         // whole / decimal / date / time / textLength
@@ -167,6 +177,46 @@ internal static partial class DataValidationScanner
         }
 
         return Supported(validation, sqref);
+    }
+
+    /// <summary>
+    /// リストの参照元を解決する。直接指定・同じシート内の絶対参照に加えて、
+    /// ブック全体を対象とする単純な名前定義にも対応する。
+    /// </summary>
+    private static DataValidationInfo ResolveListSource(
+        DataValidation validation,
+        string? formula1,
+        string sqref,
+        WorkbookDefinedNameIndex definedNames)
+    {
+        if (ValidateListSource(formula1, sqref) is null)
+        {
+            return Supported(validation, sqref);
+        }
+
+        var text = (formula1 ?? string.Empty).Trim();
+
+        // 先頭の "=" は付く実装もあるので、名前として引くときだけ許容する。
+        var candidate = text.StartsWith('=') ? text[1..].Trim() : text;
+
+        if (X14DataValidationScanner.LooksLikeName(candidate) && definedNames.HasAnyName)
+        {
+            if (definedNames.TryResolve(candidate, out var resolved, out var nameError))
+            {
+                return new DataValidationInfo
+                {
+                    Element = (DataValidation)validation.CloneNode(true),
+                    Sqref = sqref,
+                    DefinedName = resolved!.Name,
+                    TargetSheetName = resolved.TargetSheetName,
+                    TargetRange = resolved.Range,
+                };
+            }
+
+            return Blocked(sqref, $"セル {sqref} の入力規則: {nameError}");
+        }
+
+        return Blocked(sqref, ValidateListSource(formula1, sqref)!);
     }
 
     /// <summary>リストの参照元が、直接指定か同じシート内の単純な絶対参照かを確かめる。</summary>

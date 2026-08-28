@@ -78,6 +78,10 @@ internal sealed class SheetCopyScan
 
     /// <summary>入力規則のコンテナ(子要素なし)。count は出力時に振り直す。</summary>
     public DataValidations? DataValidationContainer { get; init; }
+
+    /// <summary>Office 2010 以降の拡張リスト入力規則(x14)。</summary>
+    public IReadOnlyList<X14ListValidationInfo> X14ListValidations { get; init; }
+        = Array.Empty<X14ListValidationInfo>();
 }
 
 /// <summary>解析済みの印刷範囲・印刷タイトル。範囲はシート名を含まない。</summary>
@@ -255,6 +259,8 @@ internal static class WorksheetCopyScanner
 
         var hyperlinks = new List<HyperlinkInfo>();
         var dataValidations = new List<DataValidationInfo>();
+        var x14Validations = new List<X14ListValidationInfo>();
+        var definedNameIndex = WorkbookDefinedNameIndex.Create(workbookPart);
         DataValidations? dataValidationContainer = null;
         PageSetupProperties? pageSetupProperties = null;
         PrintOptions? printOptions = null;
@@ -280,16 +286,17 @@ internal static class WorksheetCopyScanner
                     continue;
                 }
 
-                // Office 2010 以降の拡張入力規則(x14)は構造が異なるため、
-                // 標準形式と一緒に扱わず、存在を検出して Block する。
-                if (string.Equals(reader.NamespaceUri, DataValidationScanner.X14Namespace, StringComparison.Ordinal)
-                    && reader.LocalName is "dataValidations" or "dataValidation")
+                var type = reader.ElementType;
+
+                if (type == typeof(WorksheetExtensionList))
                 {
-                    AddOnce(blocks, "新しい形式の入力規則を含むため、現在のバージョンでは安全に集約できません。");
+                    ScanExtensionList(
+                        (WorksheetExtensionList)reader.LoadCurrentElement()!,
+                        definedNameIndex,
+                        x14Validations,
+                        blocks);
                     continue;
                 }
-
-                var type = reader.ElementType;
 
                 if (type == typeof(Cell))
                 {
@@ -360,7 +367,8 @@ internal static class WorksheetCopyScanner
                         dataValidationContainer = (DataValidations)container.CloneNode(false);
                         foreach (var validation in container.Elements<DataValidation>())
                         {
-                            dataValidations.Add(DataValidationScanner.Scan(validation, context.IsDate1904));
+                            dataValidations.Add(
+                                DataValidationScanner.Scan(validation, context.IsDate1904, definedNameIndex));
                         }
                     }
                 }
@@ -462,6 +470,11 @@ internal static class WorksheetCopyScanner
             AddOnce(blocks, reason);
         }
 
+        foreach (var reason in x14Validations.Select(item => item.BlockReason).OfType<string>())
+        {
+            AddOnce(blocks, reason);
+        }
+
         if (HasDuplicateOrOverlappingMerges(mergeReferences))
         {
             blocks.Add("結合セルの範囲が重複しています(定義が壊れている可能性があります)。");
@@ -495,6 +508,7 @@ internal static class WorksheetCopyScanner
             Hyperlinks = hyperlinks,
             DataValidations = dataValidations,
             DataValidationContainer = dataValidationContainer,
+            X14ListValidations = x14Validations,
             DimensionReference = dimension,
             SheetFormat = sheetFormat,
             Columns = columns,
@@ -507,6 +521,46 @@ internal static class WorksheetCopyScanner
             Protection = protection,
             MergeReferences = mergeReferences,
         };
+    }
+
+    /// <summary>
+    /// extLst を調べる。対応するのは Office 2010 の入力規則拡張だけで、
+    /// それ以外の拡張は黙って捨てず Block する(丸ごとコピーもしない)。
+    /// </summary>
+    private static void ScanExtensionList(
+        WorksheetExtensionList extensionList,
+        WorkbookDefinedNameIndex definedNames,
+        List<X14ListValidationInfo> x14Validations,
+        List<string> blocks)
+    {
+        foreach (var extension in extensionList.Elements<WorksheetExtension>())
+        {
+            var validations = extension
+                .Descendants<DocumentFormat.OpenXml.Office2010.Excel.DataValidations>()
+                .ToList();
+
+            var isDataValidationExtension = string.Equals(
+                extension.Uri?.Value,
+                X14DataValidationScanner.ExtensionUri,
+                StringComparison.OrdinalIgnoreCase);
+
+            if (!isDataValidationExtension || validations.Count == 0)
+            {
+                AddOnce(blocks,
+                    "対応していない拡張情報(新しい形式の設定)を含むため、"
+                        + "現在のバージョンでは安全に集約できません。");
+                continue;
+            }
+
+            foreach (var container in validations)
+            {
+                foreach (var validation in
+                    container.Elements<DocumentFormat.OpenXml.Office2010.Excel.DataValidation>())
+                {
+                    x14Validations.Add(X14DataValidationScanner.Scan(validation, definedNames));
+                }
+            }
+        }
     }
 
     private static void AddPartLevelBlocks(WorksheetPart worksheetPart, List<string> blocks)
