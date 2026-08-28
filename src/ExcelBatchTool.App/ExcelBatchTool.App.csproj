@@ -4,6 +4,11 @@
     <ProjectReference Include="..\ExcelBatchTool.Core\ExcelBatchTool.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- 貼り付け解析など、UI を介さず確かめたい internal をテストから見えるようにする。 -->
+    <InternalsVisibleTo Include="ExcelBatchTool.Core.Tests" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>

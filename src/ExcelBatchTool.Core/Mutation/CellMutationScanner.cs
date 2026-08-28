@@ -7,13 +7,27 @@ using ExcelBatchTool.Core.Merge;
 
 namespace ExcelBatchTool.Core.Mutation;
 
-/// <summary>1 つのシートを変更できるか調べた結果。</summary>
-internal sealed record SheetMutationScan
+/// <summary>走査対象の 1 セル(位置と、書き込む値の種類)。</summary>
+internal readonly record struct ScanTarget(TargetCellAddress Address, CellWriteKind WriteKind);
+
+/// <summary>1 つの対象セルを変更できるか調べた結果。</summary>
+internal sealed record TargetCellScan
 {
     public string? BlockReason { get; init; }
 
     /// <summary>対象セルの現在値(数式は評価しない)。</summary>
     public MergeCellValue CurrentValue { get; init; }
+}
+
+/// <summary>1 つのシートを変更できるか調べた結果。</summary>
+internal sealed record SheetMutationScan
+{
+    /// <summary>シート全体として変更できない理由(保護・ピボットなど)。</summary>
+    public string? BlockReason { get; init; }
+
+    /// <summary>正規化済みセル参照 → そのセルの走査結果。</summary>
+    public IReadOnlyDictionary<string, TargetCellScan> Cells { get; init; }
+        = new Dictionary<string, TargetCellScan>(StringComparer.Ordinal);
 }
 
 /// <summary>1 つの Workbook を変更できるか調べた結果。</summary>
@@ -31,6 +45,9 @@ internal sealed record WorkbookMutationScan
 /// 一括変更の対象を検証する。対象ファイルは読み取り専用でしか開かない。
 /// 「変更しても意味が変わらないと言い切れるもの」だけを通し、
 /// 判断できないものは黙って書き換えず理由付きで Block する。
+///
+/// 入力セットが何百件あっても Workbook を開くのは 1 ファイル 1 回、
+/// シートの走査も 1 シート 1 回で、すべての対象セルをまとめて確かめる。
 /// </summary>
 internal static class CellMutationScanner
 {
@@ -38,8 +55,7 @@ internal static class CellMutationScanner
     public static WorkbookMutationScan Scan(
         string filePath,
         IReadOnlyList<string> sheetNames,
-        TargetCellAddress address,
-        CellWriteKind writeKind,
+        IReadOnlyList<ScanTarget> targets,
         CancellationToken cancellationToken)
     {
         if (!File.Exists(filePath))
@@ -74,7 +90,7 @@ internal static class CellMutationScanner
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 sheets[sheetName] = ScanSheet(
-                    workbookPart, sheetName, address, writeKind, context, numberFormats, cancellationToken);
+                    workbookPart, sheetName, targets, context, numberFormats, cancellationToken);
             }
 
             return new WorkbookMutationScan { BlockReasons = blocks, Sheets = sheets };
@@ -164,11 +180,11 @@ internal static class CellMutationScanner
         return false;
     }
 
+    /// <summary>1 シートを 1 回だけ走査し、すべての対象セルを確かめる。</summary>
     private static SheetMutationScan ScanSheet(
         WorkbookPart workbookPart,
         string sheetName,
-        TargetCellAddress address,
-        CellWriteKind writeKind,
+        IReadOnlyList<ScanTarget> targets,
         WorkbookReadContext context,
         NumberFormatCompatibility numberFormats,
         CancellationToken cancellationToken)
@@ -202,11 +218,11 @@ internal static class CellMutationScanner
                 "ピボットテーブルがあるシートは、更新で値が入れ替わる可能性があるため変更できません。");
         }
 
-        Cell? target = null;
+        var found = new Dictionary<string, Cell>(StringComparer.OrdinalIgnoreCase);
+        var merged = new HashSet<string>(StringComparer.Ordinal);
+        var hyperlinked = new HashSet<string>(StringComparer.Ordinal);
+        var validated = new HashSet<string>(StringComparer.Ordinal);
         var protectionFound = false;
-        var mergedFound = false;
-        var hyperlinkFound = false;
-        var validationFound = false;
 
         using (var reader = OpenXmlReader.Create(worksheetPart))
         {
@@ -228,31 +244,32 @@ internal static class CellMutationScanner
                 else if (type == typeof(Cell))
                 {
                     var cell = (Cell)reader.LoadCurrentElement()!;
-                    if (Matches(cell.CellReference?.Value, address))
+                    if (cell.CellReference?.Value is { } reference
+                        && !found.ContainsKey(reference)
+                        && IsTarget(targets, reference))
                     {
-                        target = cell;
+                        found[reference] = cell;
                     }
                 }
                 else if (type == typeof(MergeCell))
                 {
-                    var reference = ((MergeCell)reader.LoadCurrentElement()!).Reference?.Value;
-                    mergedFound |= Contains(reference, address);
+                    MarkCovered(((MergeCell)reader.LoadCurrentElement()!).Reference?.Value, targets, merged);
                 }
                 else if (type == typeof(Hyperlink))
                 {
-                    var reference = ((Hyperlink)reader.LoadCurrentElement()!).Reference?.Value;
-                    hyperlinkFound |= Contains(reference, address);
+                    MarkCovered(((Hyperlink)reader.LoadCurrentElement()!).Reference?.Value, targets, hyperlinked);
                 }
                 else if (type == typeof(DataValidation))
                 {
-                    var sqref = ((DataValidation)reader.LoadCurrentElement()!).SequenceOfReferences?.InnerText;
-                    validationFound |= ContainsAny(sqref, address);
+                    MarkCoveredAll(
+                        ((DataValidation)reader.LoadCurrentElement()!).SequenceOfReferences?.InnerText,
+                        targets, validated);
                 }
                 else if (type == typeof(DocumentFormat.OpenXml.Office2010.Excel.DataValidation))
                 {
                     var element = (DocumentFormat.OpenXml.Office2010.Excel.DataValidation)
                         reader.LoadCurrentElement()!;
-                    validationFound |= ContainsAny(element.ReferenceSequence?.Text, address);
+                    MarkCoveredAll(element.ReferenceSequence?.Text, targets, validated);
                 }
             }
         }
@@ -263,84 +280,140 @@ internal static class CellMutationScanner
                 "シートが保護されているため変更できません。Excel の保護を迂回して書き換えることはしません。");
         }
 
-        if (mergedFound)
+        var cells = new Dictionary<string, TargetCellScan>(StringComparer.Ordinal);
+        foreach (var target in targets)
         {
-            return Blocked($"{address.Reference} は結合セルの一部のため、現在のバージョンでは変更できません。");
+            cells[target.Address.Reference] = ScanTargetCell(
+                target,
+                found.GetValueOrDefault(target.Address.Reference),
+                merged, hyperlinked, validated, context, numberFormats);
         }
 
-        if (validationFound)
-        {
-            return Blocked(
-                $"{address.Reference} には入力規則が設定されています。新しい値が規則を満たすか判定できないため、"
-                    + "現在のバージョンでは変更できません。");
-        }
-
-        if (hyperlinkFound)
-        {
-            return Blocked(
-                $"{address.Reference} にはハイパーリンクが設定されています。表示だけを変えるとリンク先と"
-                    + "食い違う可能性があるため、現在のバージョンでは変更できません。");
-        }
-
-        if (target is null)
-        {
-            return Blocked(
-                $"{address.Reference} はこのシートに存在しないため、現在のバージョンでは変更できません"
-                    + "(空のセルを新しく作ることはしません)。");
-        }
-
-        if (target.CellFormula is not null)
-        {
-            return Blocked($"{address.Reference} は数式のため変更できません。数式を値に置き換えることはしません。");
-        }
-
-        // cm / vm はセル値に紐づくメタデータ(リンクされたデータ型など)への参照。
-        // 値だけ差し替えると参照先と食い違うため触らない。
-        if (target.CellMetaIndex is not null || target.ValueMetaIndex is not null)
-        {
-            return Blocked(
-                $"{address.Reference} には特別なデータ(リンクされたデータ型など)が紐づいているため、"
-                    + "現在のバージョンでは変更できません。");
-        }
-
-        if (context.ReferencesRichText(target))
-        {
-            return Blocked(
-                $"{address.Reference} は文字ごとに書式が設定されているため、"
-                    + "書き換えると書式が失われます。現在のバージョンでは変更できません。");
-        }
-
-        if (numberFormats.Check(target.StyleIndex?.Value, writeKind, address.Reference) is { } formatError)
-        {
-            return Blocked(formatError);
-        }
-
-        return new SheetMutationScan { CurrentValue = context.ReadCell(target, out _) };
+        return new SheetMutationScan { Cells = cells };
 
         static SheetMutationScan Blocked(string reason) => new() { BlockReason = reason };
     }
 
-    private static bool Matches(string? cellReference, TargetCellAddress address)
-        => cellReference is not null
-            && string.Equals(cellReference, address.Reference, StringComparison.OrdinalIgnoreCase);
+    /// <summary>対象セル 1 件の可否を、走査で集めた情報から判定する。</summary>
+    private static TargetCellScan ScanTargetCell(
+        ScanTarget target,
+        Cell? cell,
+        HashSet<string> merged,
+        HashSet<string> hyperlinked,
+        HashSet<string> validated,
+        WorkbookReadContext context,
+        NumberFormatCompatibility numberFormats)
+    {
+        var reference = target.Address.Reference;
 
-    /// <summary>1 つの範囲(A1 / A1:B5)に対象セルが含まれるか。</summary>
-    private static bool Contains(string? reference, TargetCellAddress address)
+        if (merged.Contains(reference))
+        {
+            return Blocked($"{reference} は結合セルの一部のため、現在のバージョンでは変更できません。");
+        }
+
+        if (validated.Contains(reference))
+        {
+            return Blocked(
+                $"{reference} には入力規則が設定されています。新しい値が規則を満たすか判定できないため、"
+                    + "現在のバージョンでは変更できません。");
+        }
+
+        if (hyperlinked.Contains(reference))
+        {
+            return Blocked(
+                $"{reference} にはハイパーリンクが設定されています。表示だけを変えるとリンク先と"
+                    + "食い違う可能性があるため、現在のバージョンでは変更できません。");
+        }
+
+        if (cell is null)
+        {
+            return Blocked(
+                $"{reference} はこのシートに存在しないため、現在のバージョンでは変更できません"
+                    + "(空のセルを新しく作ることはしません)。");
+        }
+
+        if (cell.CellFormula is not null)
+        {
+            return Blocked($"{reference} は数式のため変更できません。数式を値に置き換えることはしません。");
+        }
+
+        // cm / vm はセル値に紐づくメタデータ(リンクされたデータ型など)への参照。
+        // 値だけ差し替えると参照先と食い違うため触らない。
+        if (cell.CellMetaIndex is not null || cell.ValueMetaIndex is not null)
+        {
+            return Blocked(
+                $"{reference} には特別なデータ(リンクされたデータ型など)が紐づいているため、"
+                    + "現在のバージョンでは変更できません。");
+        }
+
+        if (context.ReferencesRichText(cell))
+        {
+            return Blocked(
+                $"{reference} は文字ごとに書式が設定されているため、"
+                    + "書き換えると書式が失われます。現在のバージョンでは変更できません。");
+        }
+
+        if (numberFormats.Check(cell.StyleIndex?.Value, target.WriteKind, reference) is { } formatError)
+        {
+            return Blocked(formatError);
+        }
+
+        return new TargetCellScan { CurrentValue = context.ReadCell(cell, out _) };
+
+        static TargetCellScan Blocked(string reason) => new() { BlockReason = reason };
+    }
+
+    /// <summary>このセル参照が対象セルのどれかと一致するか。</summary>
+    private static bool IsTarget(IReadOnlyList<ScanTarget> targets, string cellReference)
+    {
+        foreach (var target in targets)
+        {
+            if (string.Equals(target.Address.Reference, cellReference, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>1 つの範囲(A1 / A1:B5)に含まれる対象セルを記録する。</summary>
+    private static void MarkCovered(
+        string? reference, IReadOnlyList<ScanTarget> targets, HashSet<string> covered)
     {
         if (string.IsNullOrWhiteSpace(reference))
         {
-            return false;
+            return;
         }
 
         var normalized = reference.Replace("$", string.Empty, StringComparison.Ordinal);
-        return CellRangeParser.TryParseRange(normalized, out var range)
-            && address.Column >= range.FirstColumn && address.Column <= range.LastColumn
-            && address.Row >= range.FirstRow && address.Row <= range.LastRow;
+        if (!CellRangeParser.TryParseRange(normalized, out var range))
+        {
+            return;
+        }
+
+        foreach (var target in targets)
+        {
+            if (target.Address.Column >= range.FirstColumn && target.Address.Column <= range.LastColumn
+                && target.Address.Row >= range.FirstRow && target.Address.Row <= range.LastRow)
+            {
+                covered.Add(target.Address.Reference);
+            }
+        }
     }
 
-    /// <summary>空白区切りの範囲リスト(sqref)に対象セルが含まれるか。</summary>
-    private static bool ContainsAny(string? references, TargetCellAddress address)
-        => !string.IsNullOrWhiteSpace(references)
-            && references.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Any(token => Contains(token, address));
+    /// <summary>空白区切りの範囲リスト(sqref)に含まれる対象セルを記録する。</summary>
+    private static void MarkCoveredAll(
+        string? references, IReadOnlyList<ScanTarget> targets, HashSet<string> covered)
+    {
+        if (string.IsNullOrWhiteSpace(references))
+        {
+            return;
+        }
+
+        foreach (var token in references.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            MarkCovered(token, targets, covered);
+        }
+    }
 }

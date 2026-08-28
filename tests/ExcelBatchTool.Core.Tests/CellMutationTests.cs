@@ -144,9 +144,7 @@ public sealed class CellMutationTests
         var result = Execute(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         Assert.True(result.Success, result.Message);
@@ -173,9 +171,7 @@ public sealed class CellMutationTests
                 new CellMutationTarget(path, "2月"),
                 new CellMutationTarget(path, "3月"),
             ],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "完了",
+            Operations = [Operation("B2", CellWriteKind.Text, "完了")],
         });
 
         Assert.True(result.Success, result.Message);
@@ -253,6 +249,420 @@ public sealed class CellMutationTests
         File.WriteAllText(dir.File("売上" + OutputSuffix + ".xlsx.audit.json"), "{}");
 
         AssertBlocked(Request(path, "月報", "B2", CellWriteKind.Text, "確認済み"), "既にあります");
+    }
+
+    // ── A2. 入力セット(複数 Operation)────────────────────
+
+    [Fact]
+    public void Execute_TwoOperationsOnOneSheet_AppliesBoth()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認"), Cell("D5", "山田")));
+
+        var result = Execute(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "確認済み"),
+                Operation("D5", CellWriteKind.Text, "佐藤"),
+            ],
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.ChangedCellCount);
+
+        var output = Output(dir, "大阪");
+        Assert.Equal("確認済み", ReadCell(output, "月報", "B2").InlineString?.Text?.Text);
+        Assert.Equal("佐藤", ReadCell(output, "月報", "D5").InlineString?.Text?.Text);
+    }
+
+    [Fact]
+    public void Execute_TenOperations_AppliesAll()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+
+        var cells = Enumerable.Range(1, 10).Select(row => Cell($"A{row}", $"旧{row}")).ToArray();
+        CreateWorkbook(path, Sheet("月報", cells));
+
+        var result = Execute(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations = [.. Enumerable.Range(1, 10)
+                .Select(row => Operation($"A{row}", CellWriteKind.Text, $"新{row}"))],
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(10, result.ChangedCellCount);
+
+        var output = Output(dir, "大阪");
+        for (var row = 1; row <= 10; row++)
+        {
+            Assert.Equal($"新{row}", ReadCell(output, "月報", $"A{row}").InlineString?.Text?.Text);
+        }
+    }
+
+    [Fact]
+    public void Execute_MixedTextNumberAndBlank_AreWrittenPerOperation()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報",
+            Cell("B2", "未確認"), Cell("F8", 100), Cell("H10", "消す")));
+
+        var result = Execute(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "確認済み"),
+                Operation("F8", CellWriteKind.Number, "1500"),
+                Operation("H10", CellWriteKind.Blank),
+            ],
+        });
+
+        Assert.True(result.Success, result.Message);
+
+        var output = Output(dir, "大阪");
+        Assert.Equal("確認済み", ReadCell(output, "月報", "B2").InlineString?.Text?.Text);
+        Assert.Equal("1500", ReadCell(output, "月報", "F8").CellValue?.InnerText);
+
+        var blanked = ReadCell(output, "月報", "H10");
+        Assert.Null(blanked.CellValue);
+        Assert.Null(blanked.InlineString);
+    }
+
+    [Fact]
+    public void Execute_OperationsAcrossMultipleSheetsAndWorkbooks_AppliesEverywhere()
+    {
+        using var dir = new TempDir();
+        var first = dir.File("大阪.xlsx");
+        var second = dir.File("京都.xlsx");
+        CreateWorkbook(first,
+            Sheet("1月", Cell("B2", "未確認"), Cell("D5", 1)),
+            Sheet("2月", Cell("B2", "未確認"), Cell("D5", 2)));
+        CreateWorkbook(second, Sheet("1月", Cell("B2", "未確認"), Cell("D5", 3)));
+
+        var result = Execute(new CellMutationRequest
+        {
+            Targets =
+            [
+                new CellMutationTarget(first, "1月"),
+                new CellMutationTarget(first, "2月"),
+                new CellMutationTarget(second, "1月"),
+            ],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "完了"),
+                Operation("D5", CellWriteKind.Number, "9"),
+            ],
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(6, result.ChangedCellCount);
+        Assert.Equal(2, result.OutputFileNames.Count);
+
+        foreach (var (output, sheets) in new[]
+        {
+            (Output(dir, "大阪"), new[] { "1月", "2月" }),
+            (Output(dir, "京都"), new[] { "1月" }),
+        })
+        {
+            foreach (var sheetName in sheets)
+            {
+                Assert.Equal("完了", ReadCell(output, sheetName, "B2").InlineString?.Text?.Text);
+                Assert.Equal("9", ReadCell(output, sheetName, "D5").CellValue?.InnerText);
+            }
+        }
+    }
+
+    [Fact]
+    public void Preview_KeepsTheOperationOrderWithinEachSheet()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報",
+            Cell("D5", "い"), Cell("B2", "あ"), Cell("A1", "う")));
+
+        // 入力セットはセル順ではなく、利用者が入れた順(D5 → B2 → A1)のまま。
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("D5", CellWriteKind.Text, "1"),
+                Operation("B2", CellWriteKind.Text, "2"),
+                Operation("A1", CellWriteKind.Text, "3"),
+            ],
+        });
+
+        Assert.Equal(
+            new[] { "D5", "B2", "A1" },
+            preview.Targets.Select(target => target.CellReference).ToArray());
+    }
+
+    [Fact]
+    public void Execute_AuditRecordsChangesInOperationOrder()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("売上.xlsx");
+        CreateWorkbook(path,
+            Sheet("1月", Cell("D5", "い"), Cell("B2", "あ")),
+            Sheet("2月", Cell("D5", "え"), Cell("B2", "う")));
+
+        Assert.True(Execute(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "1月"), new CellMutationTarget(path, "2月")],
+            Operations =
+            [
+                Operation("D5", CellWriteKind.Text, "先"),
+                Operation("B2", CellWriteKind.Text, "後"),
+            ],
+        }).Success);
+
+        using var json = JsonDocument.Parse(
+            File.ReadAllText(dir.File("売上" + OutputSuffix + ".xlsx.audit.json")));
+        var changes = json.RootElement.GetProperty("changes").EnumerateArray()
+            .Select(change => (
+                Sheet: change.GetProperty("sheetName").GetString(),
+                Cell: change.GetProperty("cell").GetString()))
+            .ToArray();
+
+        Assert.Equal(
+            [("1月", "D5"), ("1月", "B2"), ("2月", "D5"), ("2月", "B2")],
+            changes);
+    }
+
+    [Fact]
+    public void Preview_EmptyOperationList_IsBlocked()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        AssertBlocked(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations = [],
+        }, "変更するセルが指定されていません");
+    }
+
+    [Fact]
+    public void Preview_DuplicateCellInTheInputSet_IsBlocked()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        AssertBlocked(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "確認済み"),
+                Operation("B2", CellWriteKind.Text, "別の値"),
+            ],
+        }, "重複");
+    }
+
+    [Fact]
+    public void Preview_DuplicateViaAbsoluteReference_IsBlocked()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認")));
+
+        // $B$2 と B2 は同じセル。最初/最後の値を勝手に採用しない。
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("$B$2", CellWriteKind.Text, "確認済み"),
+                Operation("B2", CellWriteKind.Text, "別の値"),
+            ],
+        });
+
+        Assert.False(preview.CanExecute);
+        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("「B2」が入力セット内で重複"));
+        Assert.Empty(Directory.GetFiles(dir.Root, "*変更済み*"));
+    }
+
+    [Fact]
+    public void Preview_OneInvalidOperation_BlocksTheWholeBatch()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "未確認"), Cell("D5", 1)));
+
+        foreach (var broken in new[]
+        {
+            Operation("ぜんぶ", CellWriteKind.Text, "x"),
+            Operation("A1:B5", CellWriteKind.Text, "x"),
+            Operation("D5", CellWriteKind.Number, "abc"),
+        })
+        {
+            var preview = Preview(new CellMutationRequest
+            {
+                Targets = [new CellMutationTarget(path, "月報")],
+                Operations = [Operation("B2", CellWriteKind.Text, "確認済み"), broken],
+            });
+
+            Assert.False(preview.CanExecute);
+            Assert.Empty(preview.Files); // 正しい行だけを適用しない。
+        }
+    }
+
+    [Fact]
+    public void Preview_OneGuardedOperation_BlocksTheWholeBatch()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+
+        // B2 は安全、他の 1 セルだけが guard に当たる構成を種類別に確かめる。
+        CreateWorkbook(path, new MutationTestSheet
+        {
+            Name = "月報",
+            Cells = [Cell("B2", "未確認"), Cell("D5", "結合内"), Cell("F8", 1, StyleId: 1)],
+            Merges = ["D5:E6"],
+            DataValidationSqref = "G1:G5",
+            HyperlinkReference = "A1",
+            RichTextCell = "C2",
+        },
+        [new MutationTestStyle(NumberFormatId: 14)]);
+
+        foreach (var (guarded, fragment) in new[]
+        {
+            (Operation("D5", CellWriteKind.Text, "x"), "結合セル"),
+            (Operation("G3", CellWriteKind.Text, "x"), "入力規則"),
+            (Operation("A1", CellWriteKind.Text, "x"), "ハイパーリンク"),
+            (Operation("C2", CellWriteKind.Text, "x"), "文字ごとに書式"),
+            (Operation("F8", CellWriteKind.Number, "5"), "表示形式"),
+            (Operation("Z99", CellWriteKind.Text, "x"), "存在しない"),
+        })
+        {
+            var preview = Preview(new CellMutationRequest
+            {
+                Targets = [new CellMutationTarget(path, "月報")],
+                Operations = [Operation("B2", CellWriteKind.Text, "確認済み"), guarded],
+            });
+
+            // 安全な B2 だけを適用する経路が無いこと(実行そのものが拒否される)。
+            Assert.False(preview.CanExecute);
+            Assert.Contains(preview.Blocks, issue => issue.Message.Contains(fragment));
+            Assert.False(new CellMutator().Execute(preview).Success);
+        }
+
+        Assert.Empty(Directory.GetFiles(dir.Root, "*変更済み*"));
+        Assert.Empty(Directory.GetFiles(dir.Root, "~ebt-*"));
+    }
+
+    [Fact]
+    public void Execute_PartialNoOpAcrossOperations_WritesOnlyWhatDiffers()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "確認済み"), Cell("D5", "山田")));
+
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "確認済み"), // 現在値と同じ
+                Operation("D5", CellWriteKind.Text, "佐藤"),
+            ],
+        });
+
+        Assert.True(preview.CanExecute);
+        Assert.Equal(1, preview.NoOpCount);
+        Assert.Equal(1, preview.ChangeCount);
+        Assert.True(new CellMutator().Execute(preview).Success);
+
+        var output = Output(dir, "大阪");
+
+        // No-op のセルは共有文字列のまま、変更したセルだけ InlineString になる。
+        Assert.Equal(CellValues.SharedString, ReadCell(output, "月報", "B2").DataType?.Value);
+        Assert.Equal("佐藤", ReadCell(output, "月報", "D5").InlineString?.Text?.Text);
+
+        // 控えには実際に変更したセルだけを書く。
+        using var json = JsonDocument.Parse(
+            File.ReadAllText(dir.File("大阪" + OutputSuffix + ".xlsx.audit.json")));
+        var change = Assert.Single(json.RootElement.GetProperty("changes").EnumerateArray());
+        Assert.Equal("D5", change.GetProperty("cell").GetString());
+    }
+
+    [Fact]
+    public void Preview_EveryOperationIsNoOp_CannotExecute()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        CreateWorkbook(path, Sheet("月報", Cell("B2", "確認済み"), Cell("F8", 1500)));
+
+        var preview = Preview(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "月報")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "確認済み"),
+                Operation("F8", CellWriteKind.Number, "1500"),
+            ],
+        });
+
+        Assert.False(preview.CanExecute);
+        Assert.Equal(2, preview.NoOpCount);
+        Assert.Empty(Directory.GetFiles(dir.Root, "*変更済み*"));
+    }
+
+    [Fact]
+    public void Execute_MultiSheetMultiOperation_ChangesOnlyTheTargetWorksheetParts()
+    {
+        using var dir = new TempDir();
+        var path = dir.File("大阪.xlsx");
+        TestMutationWorkbookFactory.Create(path,
+            [
+                new MutationTestSheet
+                {
+                    Name = "1月",
+                    Cells = [Cell("A1", "項目"), Cell("B2", "未確認"), Cell("D5", 1, StyleId: 1)],
+                    AddChart = true,
+                    AddImage = true,
+                    AddTable = true,
+                    AddConditionalFormatting = true,
+                },
+                Sheet("2月", Cell("A1", "そのまま")),
+                Sheet("3月", Cell("B2", "未確認"), Cell("D5", 2, StyleId: 1)),
+            ],
+            [new MutationTestStyle(NumberFormatId: 0)]);
+
+        Assert.True(Execute(new CellMutationRequest
+        {
+            Targets = [new CellMutationTarget(path, "1月"), new CellMutationTarget(path, "3月")],
+            Operations =
+            [
+                Operation("B2", CellWriteKind.Text, "完了"),
+                Operation("D5", CellWriteKind.Number, "9"),
+            ],
+        }).Success);
+
+        var before = Entries(path);
+        var after = Entries(Output(dir, "大阪"));
+
+        // 変わってよいのは、実際に変更した WorksheetPart(1月 = sheet1、3月 = sheet3)だけ。
+        var changed = before.Keys.Union(after.Keys)
+            .Where(name => !before.TryGetValue(name, out var left)
+                || !after.TryGetValue(name, out var right)
+                || left != right)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(["xl/worksheets/sheet1.xml", "xl/worksheets/sheet3.xml"], changed);
+
+        // 変更した両セルとも StyleIndex は保持される。
+        Assert.Equal(1U, ReadCell(Output(dir, "大阪"), "1月", "D5").StyleIndex?.Value);
+        Assert.Equal(1U, ReadCell(Output(dir, "大阪"), "3月", "D5").StyleIndex?.Value);
     }
 
     // ── B. 対象セルの guard ──────────────────────────────
@@ -727,9 +1137,7 @@ public sealed class CellMutationTests
         Assert.True(Execute(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         }).Success);
 
         Assert.Equal(before, new[] { Snapshot(first), Snapshot(second) });
@@ -747,9 +1155,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         Assert.True(preview.CanExecute);
@@ -795,9 +1201,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         // 2 つ目を壊してから実行する(1 つ目だけ作られないこと)。
@@ -851,9 +1255,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         // 2 ファイル目の控えファイルの置き場所をフォルダーで塞ぐ。1 ファイル目を確定した
@@ -887,9 +1289,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         // 1 ファイル目を作り終えた時点で中止する。
@@ -984,9 +1384,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         // 2 ファイル目の控えファイルの確定で失敗させる。
@@ -1129,9 +1527,7 @@ public sealed class CellMutationTests
         Assert.True(Execute(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         }).Success);
 
         Assert.Equal(2, Directory.GetFiles(dir.Root, "*変更済み.xlsx").Length);
@@ -1167,9 +1563,7 @@ public sealed class CellMutationTests
         var request = new CellMutationRequest
         {
             Targets = [new CellMutationTarget(path, "1月"), new CellMutationTarget(path, "2月")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         };
 
         var preview = Preview(request);
@@ -1210,9 +1604,7 @@ public sealed class CellMutationTests
             new CellMutationRequest
             {
                 Targets = [new CellMutationTarget(path, "月報"), new CellMutationTarget(path, "月報")],
-                CellReference = "B2",
-                WriteKind = CellWriteKind.Text,
-                TextValue = "確認済み",
+                Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
             },
             "複数回選択");
     }
@@ -1253,9 +1645,7 @@ public sealed class CellMutationTests
         var preview = Preview(new CellMutationRequest
         {
             Targets = [new CellMutationTarget(first, "月報"), new CellMutationTarget(second, "月報")],
-            CellReference = "B2",
-            WriteKind = CellWriteKind.Text,
-            TextValue = "確認済み",
+            Operations = [Operation("B2", CellWriteKind.Text, "確認済み")],
         });
 
         Assert.False(preview.CanExecute);
@@ -1285,6 +1675,12 @@ public sealed class CellMutationTests
         string path, string sheet, string reference, CellWriteKind kind, string? value = null) => new()
         {
             Targets = [new CellMutationTarget(path, sheet)],
+            Operations = [Operation(reference, kind, value)],
+        };
+
+    private static CellMutationOperationRequest Operation(
+        string reference, CellWriteKind kind, string? value = null) => new()
+        {
             CellReference = reference,
             WriteKind = kind,
             TextValue = kind == CellWriteKind.Text ? value : null,

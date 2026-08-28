@@ -89,40 +89,22 @@ public sealed class MutationWorkbookViewModel : ObservableObject
     public bool HasUnavailableReason => UnavailableReason is not null;
 }
 
-/// <summary>「セルをまとめて変更」(Phase 2A)の ViewModel。</summary>
-public sealed class CellMutationViewModel : ObservableObject
+/// <summary>入力セットの 1 行(セル位置・種類・新しい値)。</summary>
+public sealed class MutationOperationViewModel : ObservableObject
 {
-    private readonly CellMutationPlanner _planner = new();
-    private readonly CellMutator _mutator = new();
+    public const string KindText = "文字";
+    public const string KindNumber = "数値";
+    public const string KindBlank = "空欄";
 
-    private bool _isBusy;
-    private bool _isPreviewStale = true;
-    private CellMutationPreview? _preview;
+    /// <summary>「種類」列の選択肢。</summary>
+    public static IReadOnlyList<string> KindOptions { get; } = [KindText, KindNumber, KindBlank];
+
+    private readonly Action _onChanged;
     private string _cellReference = string.Empty;
-    private string _newValueText = string.Empty;
-    private string _outputSuffix = CellMutationDefaults.OutputSuffix;
-    private CellWriteKind _writeKind = CellWriteKind.Text;
-    private string _statusText = "変更するシートとセルを指定して、プレビューを更新してください。";
-    private string? _resultText;
-    private bool _lastRunSucceeded;
+    private string _kindDisplay = KindText;
+    private string _valueText = string.Empty;
 
-    public CellMutationViewModel()
-    {
-        RefreshPreviewCommand = new RelayCommand(
-            () => _ = RefreshPreviewAsync(),
-            () => !IsBusy && SelectedSheetCount > 0);
-        ExecuteCommand = new RelayCommand(() => _ = ExecuteAsync(), () => CanExecute);
-    }
-
-    public ObservableCollection<MutationWorkbookViewModel> Workbooks { get; } = [];
-
-    public RelayCommand RefreshPreviewCommand { get; }
-
-    public RelayCommand ExecuteCommand { get; }
-
-    public bool HasWorkbooks => Workbooks.Count > 0;
-
-    public int SelectedSheetCount => Workbooks.Sum(workbook => workbook.Sheets.Count(sheet => sheet.IsSelected));
+    public MutationOperationViewModel(Action onChanged) => _onChanged = onChanged;
 
     /// <summary>変更する位置(A1 形式の単一セル)。</summary>
     public string CellReference
@@ -132,20 +114,122 @@ public sealed class CellMutationViewModel : ObservableObject
         {
             if (SetProperty(ref _cellReference, value))
             {
-                OnSettingsChanged();
+                _onChanged();
             }
         }
     }
 
-    /// <summary>新しい値。「空欄にする」を選んだ場合は使わない。</summary>
-    public string NewValueText
+    /// <summary>値の種類(文字 / 数値 / 空欄)。</summary>
+    public string KindDisplay
     {
-        get => _newValueText;
+        get => _kindDisplay;
         set
         {
-            if (SetProperty(ref _newValueText, value))
+            if (SetProperty(ref _kindDisplay, value))
             {
-                OnSettingsChanged();
+                OnPropertyChanged(nameof(IsValueEnabled));
+                _onChanged();
+            }
+        }
+    }
+
+    /// <summary>新しい値。「空欄」の行では使わない。</summary>
+    public string ValueText
+    {
+        get => _valueText;
+        set
+        {
+            if (SetProperty(ref _valueText, value))
+            {
+                _onChanged();
+            }
+        }
+    }
+
+    public bool IsValueEnabled => !string.Equals(_kindDisplay, KindBlank, StringComparison.Ordinal);
+
+    internal CellWriteKind Kind => _kindDisplay switch
+    {
+        KindNumber => CellWriteKind.Number,
+        KindBlank => CellWriteKind.Blank,
+        _ => CellWriteKind.Text,
+    };
+
+    internal CellMutationOperationRequest ToRequest() => new()
+    {
+        CellReference = CellReference,
+        WriteKind = Kind,
+        TextValue = Kind == CellWriteKind.Text ? ValueText : null,
+        NumberText = Kind == CellWriteKind.Number ? ValueText : null,
+    };
+}
+
+/// <summary>「セルをまとめて変更」(Phase 2A / 2B)の ViewModel。</summary>
+public sealed class CellMutationViewModel : ObservableObject
+{
+    private readonly CellMutationPlanner _planner = new();
+    private readonly CellMutator _mutator = new();
+    private readonly Func<string?> _readClipboardText;
+
+    private bool _isBusy;
+    private bool _isPreviewStale = true;
+    private CellMutationPreview? _preview;
+    private string _outputSuffix = CellMutationDefaults.OutputSuffix;
+    private string _statusText = "変更するシートとセルを指定して、プレビューを更新してください。";
+    private string? _resultText;
+    private bool _lastRunSucceeded;
+    private MutationOperationViewModel? _selectedOperation;
+
+    public CellMutationViewModel()
+        : this(ReadClipboardText)
+    {
+    }
+
+    /// <summary>テスト用: クリップボードの読み取りを差し替えられるようにする。</summary>
+    internal CellMutationViewModel(Func<string?> readClipboardText)
+    {
+        _readClipboardText = readClipboardText;
+        RefreshPreviewCommand = new RelayCommand(
+            () => _ = RefreshPreviewAsync(),
+            () => !IsBusy && SelectedSheetCount > 0);
+        ExecuteCommand = new RelayCommand(() => _ = ExecuteAsync(), () => CanExecute);
+        AddOperationCommand = new RelayCommand(AddOperation, () => !IsBusy);
+        RemoveOperationCommand = new RelayCommand(
+            RemoveSelectedOperation, () => !IsBusy && SelectedOperation is not null);
+        PasteOperationsCommand = new RelayCommand(PasteOperations, () => !IsBusy);
+
+        // 初期状態から 1 行編集できるようにしておく。
+        Operations.Add(new MutationOperationViewModel(OnSettingsChanged));
+    }
+
+    public ObservableCollection<MutationWorkbookViewModel> Workbooks { get; } = [];
+
+    /// <summary>入力セット(変更するセルの一覧)。</summary>
+    public ObservableCollection<MutationOperationViewModel> Operations { get; } = [];
+
+    public RelayCommand RefreshPreviewCommand { get; }
+
+    public RelayCommand ExecuteCommand { get; }
+
+    public RelayCommand AddOperationCommand { get; }
+
+    public RelayCommand RemoveOperationCommand { get; }
+
+    public RelayCommand PasteOperationsCommand { get; }
+
+    public bool HasWorkbooks => Workbooks.Count > 0;
+
+    public int SelectedSheetCount => Workbooks.Sum(workbook => workbook.Sheets.Count(sheet => sheet.IsSelected));
+
+    /// <summary>一覧で選択中の行(削除対象)。</summary>
+    public MutationOperationViewModel? SelectedOperation
+    {
+        get => _selectedOperation;
+        set
+        {
+            if (SetProperty(ref _selectedOperation, value))
+            {
+                RemoveOperationCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -161,45 +245,6 @@ public sealed class CellMutationViewModel : ObservableObject
             }
         }
     }
-
-    public bool IsTextKind
-    {
-        get => _writeKind == CellWriteKind.Text;
-        set
-        {
-            if (value)
-            {
-                SetWriteKind(CellWriteKind.Text);
-            }
-        }
-    }
-
-    public bool IsNumberKind
-    {
-        get => _writeKind == CellWriteKind.Number;
-        set
-        {
-            if (value)
-            {
-                SetWriteKind(CellWriteKind.Number);
-            }
-        }
-    }
-
-    public bool IsBlankKind
-    {
-        get => _writeKind == CellWriteKind.Blank;
-        set
-        {
-            if (value)
-            {
-                SetWriteKind(CellWriteKind.Blank);
-            }
-        }
-    }
-
-    /// <summary>「空欄にする」以外では新しい値を入力する。</summary>
-    public bool IsValueInputEnabled => _writeKind != CellWriteKind.Blank;
 
     public bool IsBusy
     {
@@ -272,7 +317,8 @@ public sealed class CellMutationViewModel : ObservableObject
 
     public string TargetSummaryText => _preview is null
         ? "-"
-        : $"{_preview.Targets.Count:N0} シート";
+        : $"{_preview.Targets.Select(target => (target.FilePath, target.SheetName)).Distinct().Count():N0} シート"
+            + $" × {_preview.Targets.Select(target => target.CellReference).Distinct().Count():N0} セル";
 
     public string PlannedChangesText => _preview is null
         ? "-"
@@ -350,10 +396,7 @@ public sealed class CellMutationViewModel : ObservableObject
             .SelectMany(workbook => workbook.Sheets
                 .Where(sheet => sheet.IsSelected)
                 .Select(sheet => new CellMutationTarget(workbook.FilePath, sheet.SheetName)))],
-        CellReference = CellReference,
-        WriteKind = _writeKind,
-        TextValue = _writeKind == CellWriteKind.Text ? NewValueText : null,
-        NumberText = _writeKind == CellWriteKind.Number ? NewValueText : null,
+        Operations = [.. Operations.Select(operation => operation.ToRequest())],
         OutputSuffix = OutputSuffix,
     };
 
@@ -397,20 +440,145 @@ public sealed class CellMutationViewModel : ObservableObject
         }
     }
 
-    private void SetWriteKind(CellWriteKind kind)
+    private void AddOperation()
     {
-        if (_writeKind == kind)
+        var operation = new MutationOperationViewModel(OnSettingsChanged);
+        Operations.Add(operation);
+        SelectedOperation = operation;
+        OnSettingsChanged();
+    }
+
+    private void RemoveSelectedOperation()
+    {
+        if (SelectedOperation is not { } operation)
         {
             return;
         }
 
-        _writeKind = kind;
-        OnPropertyChanged(nameof(IsTextKind));
-        OnPropertyChanged(nameof(IsNumberKind));
-        OnPropertyChanged(nameof(IsBlankKind));
-        OnPropertyChanged(nameof(IsValueInputEnabled));
+        Operations.Remove(operation);
+        SelectedOperation = null;
         OnSettingsChanged();
     }
+
+    /// <summary>
+    /// 表計算からコピーした「セル TAB 種類 TAB 値」の行を入力セットへ追加する。
+    /// 1 行でも読み取れなければ何も追加しない(一部だけ貼り付けない)。
+    /// </summary>
+    private void PasteOperations()
+    {
+        string? text;
+        try
+        {
+            text = _readClipboardText();
+        }
+        catch (Exception)
+        {
+            StatusText = "貼り付ける内容を読み取れませんでした。";
+            return;
+        }
+
+        if (!TryParsePastedOperations(text, out var rows, out var error))
+        {
+            StatusText = error!;
+            return;
+        }
+
+        foreach (var (cell, kind, value) in rows)
+        {
+            Operations.Add(new MutationOperationViewModel(OnSettingsChanged)
+            {
+                CellReference = cell,
+                KindDisplay = kind,
+                ValueText = value,
+            });
+        }
+
+        OnSettingsChanged();
+        StatusText = $"{rows.Count:N0} 行を追加しました。「プレビューを更新」を押してください。";
+    }
+
+    /// <summary>
+    /// 貼り付けテキストを解釈する。列はタブ区切りで「セル、種類(文字/数値/空欄)、値」。
+    /// 「空欄」の行は値の列が無くてもよい。
+    /// </summary>
+    internal static bool TryParsePastedOperations(
+        string? text,
+        out List<(string Cell, string Kind, string Value)> rows,
+        out string? error)
+    {
+        rows = [];
+        error = null;
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            error = "貼り付ける内容がありません。表計算で「セル・種類・値」の 3 列をコピーしてください。";
+            return false;
+        }
+
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var line = lines[index].TrimEnd('\r');
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue; // 末尾などの空行は読み飛ばす。
+            }
+
+            var columns = line.Split('\t');
+            var lineNumber = index + 1;
+
+            if (columns.Length is < 2 or > 3)
+            {
+                error = $"{lineNumber} 行目を読み取れません。"
+                    + "「セル・種類・値」のタブ区切り 3 列で貼り付けてください。";
+                return Fail(rows);
+            }
+
+            var cell = columns[0].Trim();
+            var kind = columns[1].Trim();
+            var value = columns.Length >= 3 ? columns[2] : string.Empty;
+
+            if (cell.Length == 0)
+            {
+                error = $"{lineNumber} 行目のセルの位置が空です。";
+                return Fail(rows);
+            }
+
+            if (!MutationOperationViewModel.KindOptions.Contains(kind))
+            {
+                error = $"{lineNumber} 行目の種類「{kind}」を読み取れません"
+                    + "(使えるのは 文字 / 数値 / 空欄 のみです)。";
+                return Fail(rows);
+            }
+
+            if (string.Equals(kind, MutationOperationViewModel.KindBlank, StringComparison.Ordinal)
+                && value.Length > 0)
+            {
+                error = $"{lineNumber} 行目は「空欄」なのに値が指定されています。値の列を空にしてください。";
+                return Fail(rows);
+            }
+
+            rows.Add((cell, kind, value));
+        }
+
+        if (rows.Count == 0)
+        {
+            error = "貼り付ける内容がありません。表計算で「セル・種類・値」の 3 列をコピーしてください。";
+            return false;
+        }
+
+        return true;
+
+        static bool Fail(List<(string, string, string)> rows)
+        {
+            rows.Clear(); // 一部だけ追加しない。
+            return false;
+        }
+    }
+
+    /// <summary>クリップボードの文字列を読む(UI からの実行時のみ使う)。</summary>
+    private static string? ReadClipboardText()
+        => System.Windows.Clipboard.ContainsText() ? System.Windows.Clipboard.GetText() : null;
 
     /// <summary>指定が変わったらプレビューを無効にする(古い内容のまま実行させない)。</summary>
     private void OnSettingsChanged()
@@ -443,5 +611,8 @@ public sealed class CellMutationViewModel : ObservableObject
     {
         RefreshPreviewCommand.RaiseCanExecuteChanged();
         ExecuteCommand.RaiseCanExecuteChanged();
+        AddOperationCommand.RaiseCanExecuteChanged();
+        RemoveOperationCommand.RaiseCanExecuteChanged();
+        PasteOperationsCommand.RaiseCanExecuteChanged();
     }
 }

@@ -6,7 +6,7 @@ namespace ExcelBatchTool.Core.Mutation;
 
 /// <summary>
 /// 一括変更の実行前検証(プレビュー)を作る。対象ファイルは読み取りしかしない。
-/// ここで Block が 1 件でもあれば実行させない。
+/// ここで Block が 1 件でもあれば実行させない(入力セットの一部だけ適用することもしない)。
 /// </summary>
 public sealed class CellMutationPlanner
 {
@@ -25,15 +25,17 @@ public sealed class CellMutationPlanner
             return Empty(issues);
         }
 
-        if (!TargetCellAddress.TryParse(request.CellReference, out var address, out var addressError))
+        if (request.Operations.Count == 0)
         {
-            issues.Add(new MergeIssue(MergeIssueSeverity.Block, addressError!));
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block, "変更するセルが指定されていません。行を追加してください。"));
             return Empty(issues);
         }
 
-        if (!TryResolveNewValue(request, out var newValue, out var valueError))
+        // 入力セットをすべて解釈する。1 件でも解釈できなければファイルを開かずに終える。
+        var operations = ResolveOperations(request.Operations, issues);
+        if (operations is null)
         {
-            issues.Add(new MergeIssue(MergeIssueSeverity.Block, valueError!));
             return Empty(issues);
         }
 
@@ -69,6 +71,10 @@ public sealed class CellMutationPlanner
         var sourcePaths = new HashSet<string>(
             groups.Select(group => NormalizePath(group.Key)), StringComparer.Ordinal);
 
+        var scanTargets = operations
+            .Select(operation => new ScanTarget(operation.Address, operation.Value.Kind))
+            .ToList();
+
         var targets = new List<CellMutationTargetPlan>();
         var files = new List<CellMutationFilePlan>();
         var usedOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -81,8 +87,7 @@ public sealed class CellMutationPlanner
             var fileName = Path.GetFileName(filePath);
             var sheetNames = group.Select(target => target.SheetName).Distinct(StringComparer.Ordinal).ToList();
 
-            var scan = CellMutationScanner.Scan(
-                filePath, sheetNames, address, request.WriteKind, cancellationToken);
+            var scan = CellMutationScanner.Scan(filePath, sheetNames, scanTargets, cancellationToken);
 
             var outputError = TryResolveOutput(
                 filePath, request.OutputSuffix, sourcePaths, usedOutputs,
@@ -90,7 +95,7 @@ public sealed class CellMutationPlanner
 
             var outputFileName = outputPath is null ? "-" : Path.GetFileName(outputPath);
 
-            // Workbook 全体の問題は、そのファイルのすべてのシートに付ける。
+            // Workbook 全体の問題は、そのファイルのすべての対象に付ける。
             var fileBlock = scan.BlockReasons.FirstOrDefault() ?? outputError;
 
             foreach (var reason in scan.BlockReasons)
@@ -108,36 +113,50 @@ public sealed class CellMutationPlanner
             foreach (var sheetName in sheetNames)
             {
                 var sheetScan = scan.Sheets.GetValueOrDefault(sheetName);
-                var reason = fileBlock ?? sheetScan?.BlockReason;
 
-                var current = sheetScan?.CurrentValue ?? MergeCellValue.Blank;
-                var isNoOp = reason is null && IsSameValue(current, newValue, request);
-
-                var plan = new CellMutationTargetPlan
+                if (fileBlock is null && sheetScan?.BlockReason is { } sheetReason)
                 {
-                    FilePath = filePath,
-                    FileName = fileName,
-                    SheetName = sheetName,
-                    CellReference = address.Reference,
-                    CurrentValueDisplay = reason is null ? CellValueDisplay.Of(current) : "-",
-                    CurrentTypeName = CellValueDisplay.TypeNameOf(current),
-                    NewValueDisplay = newValue.Display,
-                    NewTypeName = newValue.TypeName,
-                    OutputFileName = outputFileName,
-                    BlockReason = reason,
-                    IsNoOp = isNoOp,
-                };
-
-                targets.Add(plan);
-
-                if (reason is null && !isNoOp)
-                {
-                    changes.Add(plan);
+                    issues.Add(new MergeIssue(MergeIssueSeverity.Block, sheetReason, fileName, sheetName));
                 }
 
-                if (reason is not null && scan.BlockReasons.Count == 0 && outputError is null)
+                // 入力セットの並び順のまま計画を作る(プレビューと控えの順序を利用者の入力に合わせる)。
+                foreach (var operation in operations)
                 {
-                    issues.Add(new MergeIssue(MergeIssueSeverity.Block, reason, fileName, sheetName));
+                    var cellScan = sheetScan?.Cells.GetValueOrDefault(operation.Address.Reference);
+                    var reason = fileBlock ?? sheetScan?.BlockReason ?? cellScan?.BlockReason;
+
+                    var current = cellScan?.CurrentValue ?? MergeCellValue.Blank;
+                    var isNoOp = reason is null && IsSameValue(current, operation.Value);
+
+                    var plan = new CellMutationTargetPlan
+                    {
+                        FilePath = filePath,
+                        FileName = fileName,
+                        SheetName = sheetName,
+                        CellReference = operation.Address.Reference,
+                        NewValue = operation.Value,
+                        CurrentValueDisplay = reason is null ? CellValueDisplay.Of(current) : "-",
+                        CurrentTypeName = CellValueDisplay.TypeNameOf(current),
+                        NewValueDisplay = operation.Value.Display,
+                        NewTypeName = operation.Value.TypeName,
+                        OutputFileName = outputFileName,
+                        BlockReason = reason,
+                        IsNoOp = isNoOp,
+                    };
+
+                    targets.Add(plan);
+
+                    if (reason is null && !isNoOp)
+                    {
+                        changes.Add(plan);
+                    }
+
+                    // セル単位の問題だけを、シート単位の重複なしに報告する。
+                    if (cellScan?.BlockReason is { } cellReason
+                        && fileBlock is null && sheetScan?.BlockReason is null)
+                    {
+                        issues.Add(new MergeIssue(MergeIssueSeverity.Block, cellReason, fileName, sheetName));
+                    }
                 }
             }
 
@@ -172,17 +191,10 @@ public sealed class CellMutationPlanner
         {
             issues.Add(new MergeIssue(
                 MergeIssueSeverity.Block,
-                "変更が必要なシートがありません。新しいファイルは作成しません。"));
+                "変更が必要なセルがありません。新しいファイルは作成しません。"));
         }
 
-        return new CellMutationPreview
-        {
-            Targets = targets,
-            Files = files,
-            Issues = issues,
-            Address = address,
-            NewValue = newValue,
-        };
+        return new CellMutationPreview { Targets = targets, Files = files, Issues = issues };
 
         static CellMutationPreview Empty(List<MergeIssue> issues) => new()
         {
@@ -190,6 +202,56 @@ public sealed class CellMutationPlanner
             Files = Array.Empty<CellMutationFilePlan>(),
             Issues = issues,
         };
+    }
+
+    /// <summary>
+    /// 入力セットを解釈する(位置・値・重複)。問題があれば issues へ理由を足して null を返す。
+    /// どの行が悪いかまとめて分かるよう、途中で打ち切らずすべて確かめる。
+    /// </summary>
+    private static List<ResolvedOperation>? ResolveOperations(
+        IReadOnlyList<CellMutationOperationRequest> requests,
+        List<MergeIssue> issues)
+    {
+        var resolved = new List<ResolvedOperation>(requests.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var reportedDuplicates = new HashSet<string>(StringComparer.Ordinal);
+        var failed = false;
+
+        foreach (var request in requests)
+        {
+            if (!TargetCellAddress.TryParse(request.CellReference, out var address, out var addressError))
+            {
+                issues.Add(new MergeIssue(MergeIssueSeverity.Block, addressError!));
+                failed = true;
+                continue;
+            }
+
+            // $B$2 と B2 は同じセルとして扱う(正規化済みの参照で比べる)。
+            if (!seen.Add(address.Reference))
+            {
+                if (reportedDuplicates.Add(address.Reference))
+                {
+                    issues.Add(new MergeIssue(
+                        MergeIssueSeverity.Block,
+                        $"セル「{address.Reference}」が入力セット内で重複しています。"
+                            + "同じセルには 1 つの値だけを指定してください。"));
+                }
+
+                failed = true;
+                continue;
+            }
+
+            if (!TryResolveNewValue(request, address.Reference, out var value, out var valueError))
+            {
+                issues.Add(new MergeIssue(MergeIssueSeverity.Block, valueError!));
+                failed = true;
+                continue;
+            }
+
+            resolved.Add(new ResolvedOperation(address, value));
+        }
+
+        return failed ? null : resolved;
     }
 
     /// <summary>元ファイルが実行直前に変わっていないか確かめるための控えを取る。</summary>
@@ -263,7 +325,8 @@ public sealed class CellMutationPlanner
 
     /// <summary>新しい値を解釈する。</summary>
     private static bool TryResolveNewValue(
-        CellMutationRequest request,
+        CellMutationOperationRequest request,
+        string reference,
         out NewCellValue value,
         out string? error)
     {
@@ -279,7 +342,8 @@ public sealed class CellMutationPlanner
             case CellWriteKind.Text:
                 if (string.IsNullOrEmpty(request.TextValue))
                 {
-                    error = "新しい値を入力してください(空欄にする場合は「空欄にする」を選んでください)。";
+                    error = $"「{reference}」の新しい値を入力してください"
+                        + "(空欄にする場合は種類を「空欄」にしてください)。";
                     return false;
                 }
 
@@ -290,7 +354,7 @@ public sealed class CellMutationPlanner
                 var text = request.NumberText?.Trim();
                 if (string.IsNullOrEmpty(text))
                 {
-                    error = "新しい数値を入力してください。";
+                    error = $"「{reference}」の新しい数値を入力してください。";
                     return false;
                 }
 
@@ -298,7 +362,7 @@ public sealed class CellMutationPlanner
                         text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number)
                     || !double.IsFinite(number))
                 {
-                    error = $"「{text}」を数値として読み取れません(例: 100、-1.5)。";
+                    error = $"「{reference}」の値「{text}」を数値として読み取れません(例: 100、-1.5)。";
                     return false;
                 }
 
@@ -308,9 +372,8 @@ public sealed class CellMutationPlanner
     }
 
     /// <summary>現在の値と新しい値が、型を含めて同じか。</summary>
-    private static bool IsSameValue(
-        MergeCellValue current, NewCellValue newValue, CellMutationRequest request)
-        => request.WriteKind switch
+    private static bool IsSameValue(MergeCellValue current, NewCellValue newValue)
+        => newValue.Kind switch
         {
             CellWriteKind.Blank => current.Kind == MergeValueKind.Blank,
             CellWriteKind.Text => current.Kind == MergeValueKind.Text
@@ -329,6 +392,9 @@ public sealed class CellMutationPlanner
             return filePath.ToLowerInvariant();
         }
     }
+
+    /// <summary>解釈済みの入力セット 1 項目。</summary>
+    private readonly record struct ResolvedOperation(TargetCellAddress Address, NewCellValue Value);
 }
 
 /// <summary>解釈済みの「新しい値」。</summary>

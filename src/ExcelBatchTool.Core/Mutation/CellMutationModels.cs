@@ -19,12 +19,9 @@ public enum CellWriteKind
 /// <summary>変更対象として選ばれた 1 つの Worksheet。</summary>
 public sealed record CellMutationTarget(string FilePath, string SheetName);
 
-/// <summary>一括変更の指定内容。1 回の実行ですべての対象へ同じ値を書く。</summary>
-public sealed record CellMutationRequest
+/// <summary>入力セットの 1 項目。「どのセルへ、どんな種類の、どの値を入れるか」。</summary>
+public sealed record CellMutationOperationRequest
 {
-    /// <summary>変更対象(ファイルとシートの組)。</summary>
-    public required IReadOnlyList<CellMutationTarget> Targets { get; init; }
-
     /// <summary>書き込む位置。A1 形式の単一セルのみ。</summary>
     public required string CellReference { get; init; }
 
@@ -35,6 +32,19 @@ public sealed record CellMutationRequest
 
     /// <summary>数値を書く場合の値(利用者の入力文字列。検証は Planner が行う)。</summary>
     public string? NumberText { get; init; }
+}
+
+/// <summary>
+/// 一括変更の指定内容。選択したすべてのシートへ、同じ入力セット
+/// (複数セル × それぞれの値)を書き込む。
+/// </summary>
+public sealed record CellMutationRequest
+{
+    /// <summary>変更対象(ファイルとシートの組)。</summary>
+    public required IReadOnlyList<CellMutationTarget> Targets { get; init; }
+
+    /// <summary>入力セット。同じセルの重複指定は許可しない。</summary>
+    public required IReadOnlyList<CellMutationOperationRequest> Operations { get; init; }
 
     /// <summary>出力ファイル名に付ける接尾辞。</summary>
     public string OutputSuffix { get; init; } = CellMutationDefaults.OutputSuffix;
@@ -52,7 +62,7 @@ public static class CellMutationDefaults
 /// <summary>実行直前に元ファイルが変わっていないか確かめるための控え。</summary>
 public sealed record SourceSnapshot(string Sha256, long Length, DateTime LastWriteUtc);
 
-/// <summary>変更対象 1 件(ファイル × シート)の計画。</summary>
+/// <summary>変更対象 1 件(ファイル × シート × セル)の計画。</summary>
 public sealed record CellMutationTargetPlan
 {
     public required string FilePath { get; init; }
@@ -62,6 +72,9 @@ public sealed record CellMutationTargetPlan
     public required string SheetName { get; init; }
 
     public required string CellReference { get; init; }
+
+    /// <summary>この変更で書き込む値(解釈済み)。</summary>
+    internal NewCellValue NewValue { get; init; }
 
     /// <summary>現在の値の表示用文字列。数式は評価しない。</summary>
     public string CurrentValueDisplay { get; init; } = string.Empty;
@@ -121,12 +134,6 @@ public sealed class CellMutationPreview
     public required IReadOnlyList<CellMutationFilePlan> Files { get; init; }
 
     public IReadOnlyList<MergeIssue> Issues { get; init; } = Array.Empty<MergeIssue>();
-
-    /// <summary>解釈済みの書き込み先(A1 形式の単一セル)。</summary>
-    internal TargetCellAddress Address { get; init; }
-
-    /// <summary>解釈済みの新しい値。</summary>
-    internal NewCellValue NewValue { get; init; }
 
     public IEnumerable<MergeIssue> Blocks => Issues.Where(issue => issue.Severity == MergeIssueSeverity.Block);
 
