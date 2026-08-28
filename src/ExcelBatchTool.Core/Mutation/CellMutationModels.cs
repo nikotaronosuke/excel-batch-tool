@@ -174,6 +174,9 @@ internal sealed record MutationDataSourceCheck(string FilePath, string FileName,
 /// <summary>実行前のプレビュー。</summary>
 public sealed class CellMutationPreview
 {
+    /// <summary>変えるところが 1 つも無いときに出す文言。</summary>
+    public const string NothingToChangeMessage = "変更が必要なセルがありません。新しいファイルは作成しません。";
+
     public required IReadOnlyList<CellMutationTargetPlan> Targets { get; init; }
 
     /// <summary>実際に出力を作るファイル(変更が 1 件もないファイルは含まない)。</summary>
@@ -202,6 +205,13 @@ public sealed class CellMutationPreview
 
     /// <summary>実行できるか。Block が 1 件でもあれば実行できない。変更が 0 件でも実行しない。</summary>
     public bool CanExecute => !HasBlocks && ChangeCount > 0;
+
+    /// <summary>
+    /// 止まっている理由が「今回は変えるところが無い」だけか。
+    /// 出力は作らないが、指定そのものは正しいので、処理設定としては残せる。
+    /// </summary>
+    public bool IsBlockedOnlyByHavingNothingToChange
+        => HasBlocks && Blocks.All(issue => issue.Message == NothingToChangeMessage);
 }
 
 /// <summary>一括変更の実行結果。</summary>

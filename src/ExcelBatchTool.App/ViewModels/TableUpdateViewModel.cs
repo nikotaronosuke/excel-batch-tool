@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using ExcelBatchTool.Core.Mapping;
 using ExcelBatchTool.Core.Merge;
 using ExcelBatchTool.Core.Mutation;
+using ExcelBatchTool.Core.Recipes;
 
 namespace ExcelBatchTool.App.ViewModels;
 
@@ -13,6 +15,10 @@ public sealed class TableColumnMappingRowViewModel : ObservableObject
     public const string KindNumber = "数値";
 
     public static IReadOnlyList<string> KindOptions { get; } = [KindText, KindNumber];
+
+    /// <summary>保存した種類を画面の表示へ戻す。</summary>
+    internal static string DisplayOf(CellWriteKind kind)
+        => kind == CellWriteKind.Number ? KindNumber : KindText;
 
     private readonly Action _onChanged;
     private string _sourceColumn = string.Empty;
@@ -69,46 +75,61 @@ public sealed class TableColumnMappingRowViewModel : ObservableObject
         }
     }
 
-    internal void UpdateSourceColumns(IReadOnlyList<string> columns)
+    /// <summary>候補を入れ替える。選べなくなった項目名があれば、その名前を返す。</summary>
+    internal string? UpdateSourceColumns(IReadOnlyList<string> columns)
     {
         SourceColumns = columns;
         OnPropertyChanged(nameof(SourceColumns));
 
         if (_sourceColumn.Length > 0 && !columns.Contains(_sourceColumn))
         {
+            var dropped = _sourceColumn;
             _sourceColumn = string.Empty;
             OnPropertyChanged(nameof(SourceColumn));
+            return dropped;
         }
+
+        return null;
     }
 
-    internal void UpdateTargetColumns(IReadOnlyList<string> columns)
+    /// <summary>候補を入れ替える。選べなくなった項目名があれば、その名前を返す。</summary>
+    internal string? UpdateTargetColumns(IReadOnlyList<string> columns)
     {
         TargetColumns = columns;
         OnPropertyChanged(nameof(TargetColumns));
 
         if (_targetColumn.Length > 0 && !columns.Contains(_targetColumn))
         {
+            var dropped = _targetColumn;
             _targetColumn = string.Empty;
             OnPropertyChanged(nameof(TargetColumn));
+            return dropped;
         }
+
+        return null;
     }
+
+    internal CellWriteKind Kind => string.Equals(KindDisplay, KindNumber, StringComparison.Ordinal)
+        ? CellWriteKind.Number
+        : CellWriteKind.Text;
 
     internal TableColumnMappingRequest ToRequest() => new()
     {
         SourceColumn = SourceColumn,
         TargetColumn = TargetColumn,
-        WriteKind = string.Equals(KindDisplay, KindNumber, StringComparison.Ordinal)
-            ? CellWriteKind.Number
-            : CellWriteKind.Text,
+        WriteKind = Kind,
     };
 }
 
 /// <summary>「6. 表を突合して更新」(Phase 2C2)の ViewModel。</summary>
-public sealed class TableUpdateViewModel : ObservableObject
+public sealed class TableUpdateViewModel : ObservableObject, IRecipeHost
 {
     private readonly TableUpdatePlanner _planner = new();
     private readonly CellMutator _mutator = new();
     private readonly Func<string?> _pickSourceFile;
+
+    /// <summary>レシピに入っていたシート名。今回のファイルを選んだときに探す。</summary>
+    private string? _recipeSourceSheetName;
 
     private string _sourceFilePath = string.Empty;
     private string? _sourceSheetName;
@@ -133,10 +154,15 @@ public sealed class TableUpdateViewModel : ObservableObject
     {
     }
 
-    /// <summary>テスト用: ファイル選択を差し替えられるようにする。</summary>
-    internal TableUpdateViewModel(Func<string?> pickSourceFile)
+    /// <summary>テスト用: ファイル選択・レシピの置き場所を差し替えられるようにする。</summary>
+    internal TableUpdateViewModel(
+        Func<string?> pickSourceFile,
+        RecipeStore? recipeStore = null,
+        Func<string, bool>? confirm = null)
     {
         _pickSourceFile = pickSourceFile;
+        Recipes = new RecipeAreaViewModel(
+            this, recipeStore ?? new RecipeStore(), confirm ?? RecipeSaveGuard.AskInDialog);
 
         SelectSourceCommand = new RelayCommand(SelectSource, () => !IsBusy);
         LoadSourceColumnsCommand = new RelayCommand(
@@ -166,6 +192,9 @@ public sealed class TableUpdateViewModel : ObservableObject
     public ObservableCollection<string> ReferenceSheetChoices { get; } = [];
 
     public ObservableCollection<TableColumnMappingRowViewModel> Mappings { get; } = [];
+
+    /// <summary>このタブの処理設定(レシピ)。</summary>
+    public RecipeAreaViewModel Recipes { get; }
 
     public RelayCommand SelectSourceCommand { get; }
 
@@ -208,6 +237,8 @@ public sealed class TableUpdateViewModel : ObservableObject
         {
             if (SetProperty(ref _sourceSheetName, value))
             {
+                // 自分で選び直したら、レシピのシート名は探さない。
+                _recipeSourceSheetName = null;
                 OnSettingsChanged();
             }
         }
@@ -455,6 +486,8 @@ public sealed class TableUpdateViewModel : ObservableObject
         SourceSheetNames.Clear();
         SourceInfoText = null;
 
+        StatusText = "「データ元の項目を読み込む」を押してください。";
+
         if (SourceMappingPlanner.KindOf(path) == SourceFileKind.Xlsx)
         {
             foreach (var name in SourceMappingPlanner.ReadSourceSheetNames(path))
@@ -462,7 +495,20 @@ public sealed class TableUpdateViewModel : ObservableObject
                 SourceSheetNames.Add(name);
             }
 
-            _sourceSheetName = SourceSheetNames.FirstOrDefault();
+            if (_recipeSourceSheetName is { } saved)
+            {
+                // レシピのシートが無いときは、先頭シートを黙って使わずに選び直してもらう。
+                var found = SourceSheetNames.Contains(saved);
+                _sourceSheetName = found ? saved : null;
+                if (!found)
+                {
+                    StatusText = SourceMappingViewModel.MissingSheetMessage(saved);
+                }
+            }
+            else
+            {
+                _sourceSheetName = SourceSheetNames.FirstOrDefault();
+            }
         }
         else
         {
@@ -471,7 +517,6 @@ public sealed class TableUpdateViewModel : ObservableObject
 
         OnPropertyChanged(nameof(SourceSheetName));
         OnPropertyChanged(nameof(IsSheetSelectionEnabled));
-        StatusText = "「データ元の項目を読み込む」を押してください。";
         OnSettingsChanged();
     }
 
@@ -507,19 +552,79 @@ public sealed class TableUpdateViewModel : ObservableObject
             ? $"{header.Columns.Count:N0} 項目 / 文字コード {encoding}"
             : $"{header.Columns.Count:N0} 項目";
 
+        var notes = ReconcileWithSourceColumns();
+
+        StatusText = notes.Count > 0
+            ? string.Join(" ", notes)
+            : "転記先の項目も読み込んで、対応付けを指定してください。";
+        OnSettingsChanged();
+    }
+
+    /// <summary>
+    /// 読み込んだデータ元の項目名と、今の指定(キー・対応付け)を突き合わせる。
+    /// 無くなった項目は似た名前を推測せず空にして、選び直してもらう。
+    /// </summary>
+    private List<string> ReconcileWithSourceColumns()
+    {
+        var notes = new List<string>();
+
         if (!SourceColumns.Contains(SourceKeyColumn))
         {
-            _sourceKeyColumn = SourceColumns.FirstOrDefault() ?? string.Empty;
+            if (SourceKeyColumn.Length > 0)
+            {
+                notes.Add(
+                    $"保存されたデータ元のキー「{SourceKeyColumn}」が今回のデータ元にありません。選び直してください。");
+                _sourceKeyColumn = string.Empty;
+            }
+            else
+            {
+                _sourceKeyColumn = SourceColumns.FirstOrDefault() ?? string.Empty;
+            }
+
             OnPropertyChanged(nameof(SourceKeyColumn));
         }
 
         foreach (var mapping in Mappings)
         {
-            mapping.UpdateSourceColumns(SourceColumns);
+            if (mapping.UpdateSourceColumns(SourceColumns) is { } dropped)
+            {
+                notes.Add($"保存された項目「{dropped}」が今回のデータ元にありません。選び直してください。");
+            }
         }
 
-        StatusText = "転記先の項目も読み込んで、対応付けを指定してください。";
-        OnSettingsChanged();
+        return notes;
+    }
+
+    /// <summary>読み込んだ転記先の項目名と、今の指定を突き合わせる。</summary>
+    private List<string> ReconcileWithTargetColumns()
+    {
+        var notes = new List<string>();
+
+        if (!TargetColumns.Contains(TargetKeyColumn))
+        {
+            if (TargetKeyColumn.Length > 0)
+            {
+                notes.Add(
+                    $"保存された転記先のキー「{TargetKeyColumn}」が今回の転記先にありません。選び直してください。");
+                _targetKeyColumn = string.Empty;
+            }
+            else
+            {
+                _targetKeyColumn = TargetColumns.FirstOrDefault() ?? string.Empty;
+            }
+
+            OnPropertyChanged(nameof(TargetKeyColumn));
+        }
+
+        foreach (var mapping in Mappings)
+        {
+            if (mapping.UpdateTargetColumns(TargetColumns) is { } dropped)
+            {
+                notes.Add($"保存された転記先の項目「{dropped}」が今回の転記先にありません。選び直してください。");
+            }
+        }
+
+        return notes;
     }
 
     /// <summary>基準シートから転記先の項目名を読み込む。</summary>
@@ -557,18 +662,11 @@ public sealed class TableUpdateViewModel : ObservableObject
             TargetColumns.Add(column);
         }
 
-        if (!TargetColumns.Contains(TargetKeyColumn))
-        {
-            _targetKeyColumn = TargetColumns.FirstOrDefault() ?? string.Empty;
-            OnPropertyChanged(nameof(TargetKeyColumn));
-        }
+        var notes = ReconcileWithTargetColumns();
 
-        foreach (var mapping in Mappings)
-        {
-            mapping.UpdateTargetColumns(TargetColumns);
-        }
-
-        StatusText = "対応付けを指定して、プレビューを更新してください。";
+        StatusText = notes.Count > 0
+            ? string.Join(" ", notes)
+            : "対応付けを指定して、プレビューを更新してください。";
         OnSettingsChanged();
     }
 
@@ -735,6 +833,103 @@ public sealed class TableUpdateViewModel : ObservableObject
 
     private static bool TryParseRow(string text, out int row)
         => int.TryParse(text, out row) && row >= 1;
+
+    RecipeType IRecipeHost.RecipeType => RecipeType.SourceTableToTargetTable;
+
+    string? IRecipeHost.RecipeSaveBlockedReason
+        => RecipeSaveGuard.ReasonFor(_preview?.Mutation, IsPreviewStale);
+
+    /// <summary>今の指定をレシピにする。データ元・転記先のファイルと基準シートは含めない。</summary>
+    SavedRecipe IRecipeHost.CreateRecipe(string name)
+    {
+        // 保存できるのは「問題なくプレビューできた設定」だけなので、ここでは種類が分かっている。
+        var kind = SourceMappingPlanner.KindOf(SourceFilePath) ?? SourceFileKind.Xlsx;
+
+        return new SavedRecipe
+        {
+            Name = name,
+            Type = RecipeType.SourceTableToTargetTable,
+            SourceTableToTargetTable = new SourceTableToTargetTableRecipe
+            {
+                SourceFileKind = kind,
+                SourceSheetName = kind == SourceFileKind.Xlsx ? SourceSheetName : null,
+                SourceHeaderRow = TryParseRow(SourceHeaderRowText, out var sourceRow) ? sourceRow : 1,
+                SourceKeyColumn = SourceKeyColumn,
+                TargetHeaderRow = TryParseRow(TargetHeaderRowText, out var targetRow) ? targetRow : 1,
+                TargetKeyColumn = TargetKeyColumn,
+                Mappings = [.. Mappings.Select(mapping => new RecipeColumnMapping
+                {
+                    SourceColumn = mapping.SourceColumn,
+                    TargetColumn = mapping.TargetColumn,
+                    Kind = mapping.Kind,
+                })],
+                OutputSuffix = OutputSuffix,
+            },
+        };
+    }
+
+    /// <summary>レシピを画面へ戻す。今回のファイルの選択はそのまま残し、プレビューはやり直させる。</summary>
+    IReadOnlyList<string> IRecipeHost.ApplyRecipe(SavedRecipe recipe)
+    {
+        var payload = recipe.SourceTableToTargetTable!;
+        var notes = new List<string>();
+
+        _recipeSourceSheetName = payload.SourceFileKind == SourceFileKind.Xlsx
+            ? payload.SourceSheetName
+            : null;
+
+        if (SourceFilePath.Length > 0
+            && SourceMappingPlanner.KindOf(SourceFilePath) != payload.SourceFileKind)
+        {
+            notes.Add(SourceMappingViewModel.SourceKindMismatchMessage(payload.SourceFileKind));
+        }
+
+        SourceHeaderRowText = payload.SourceHeaderRow.ToString(CultureInfo.InvariantCulture);
+        TargetHeaderRowText = payload.TargetHeaderRow.ToString(CultureInfo.InvariantCulture);
+        _sourceKeyColumn = payload.SourceKeyColumn;
+        OnPropertyChanged(nameof(SourceKeyColumn));
+        _targetKeyColumn = payload.TargetKeyColumn;
+        OnPropertyChanged(nameof(TargetKeyColumn));
+        OutputSuffix = payload.OutputSuffix;
+
+        Mappings.Clear();
+        foreach (var mapping in payload.Mappings)
+        {
+            Mappings.Add(new TableColumnMappingRowViewModel(OnSettingsChanged, SourceColumns, TargetColumns)
+            {
+                SourceColumn = mapping.SourceColumn,
+                TargetColumn = mapping.TargetColumn,
+                KindDisplay = TableColumnMappingRowViewModel.DisplayOf(mapping.Kind),
+            });
+        }
+
+        SelectedMapping = null;
+
+        if (SourceSheetNames.Count > 0 && _recipeSourceSheetName is { } sheet)
+        {
+            var found = SourceSheetNames.Contains(sheet);
+            _sourceSheetName = found ? sheet : null;
+            OnPropertyChanged(nameof(SourceSheetName));
+
+            if (!found)
+            {
+                notes.Add(SourceMappingViewModel.MissingSheetMessage(sheet));
+            }
+        }
+
+        if (SourceColumns.Count > 0)
+        {
+            notes.AddRange(ReconcileWithSourceColumns());
+        }
+
+        if (TargetColumns.Count > 0)
+        {
+            notes.AddRange(ReconcileWithTargetColumns());
+        }
+
+        OnSettingsChanged();
+        return notes;
+    }
 
     /// <summary>指定が変わったらプレビューを無効にする(古い内容のまま実行させない)。</summary>
     private void OnSettingsChanged()

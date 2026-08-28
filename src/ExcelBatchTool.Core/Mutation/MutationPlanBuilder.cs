@@ -152,8 +152,7 @@ internal static class MutationPlanBuilder
         if (issues.All(issue => issue.Severity != MergeIssueSeverity.Block) && files.Count == 0)
         {
             issues.Add(new MergeIssue(
-                MergeIssueSeverity.Block,
-                "変更が必要なセルがありません。新しいファイルは作成しません。"));
+                MergeIssueSeverity.Block, CellMutationPreview.NothingToChangeMessage));
         }
 
         return new CellMutationPreview

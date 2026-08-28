@@ -71,6 +71,69 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+
+        <!-- タブ 4〜6 の上に置く「処理設定(レシピ)」の共通領域。 -->
+        <DataTemplate x:Key="RecipeAreaTemplate">
+            <Border Background="#FFFFFF" BorderBrush="#D8DCE3" BorderThickness="1"
+                    CornerRadius="4" Padding="12,8" Margin="0,0,0,10">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" MinWidth="110" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" MinWidth="80" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Grid.Column="0" Text="処理設定" FontSize="12" FontWeight="SemiBold"
+                                   Foreground="#3B4252" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ComboBox Grid.Column="1" Height="24" FontSize="12"
+                                  VerticalContentAlignment="Center"
+                                  ToolTip="このタブで使える、保存済みの設定"
+                                  ItemsSource="{Binding Recipes}" DisplayMemberPath="Name"
+                                  SelectedItem="{Binding SelectedRecipe, Mode=TwoWay}" />
+                        <Button Grid.Column="2" Content="読み込む" Padding="10,3" FontSize="11"
+                                Margin="6,0,0,0" Command="{Binding LoadCommand}" />
+                        <Button Grid.Column="3" Content="更新" Padding="10,3" FontSize="11"
+                                Margin="4,0,0,0"
+                                ToolTip="選んだ設定の内容を、今の設定で置き換えます"
+                                Command="{Binding UpdateCommand}" />
+                        <Button Grid.Column="4" Content="削除" Padding="10,3" FontSize="11"
+                                Margin="4,0,0,0" Command="{Binding DeleteCommand}" />
+                        <TextBlock Grid.Column="5" Text="名前" FontSize="12" Foreground="#5B6472"
+                                   VerticalAlignment="Center" Margin="14,0,6,0" />
+                        <TextBox Grid.Column="6" Height="24" FontSize="12"
+                                 VerticalContentAlignment="Center"
+                                 ToolTip="例: 商品マスタ月次更新(60 文字以内)"
+                                 Text="{Binding NameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Grid.Column="7" Content="現在の設定を保存" Padding="10,3" FontSize="11"
+                                Margin="6,0,0,0" Command="{Binding SaveCommand}" />
+                    </Grid>
+
+                    <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#8A8F98" Margin="0,6,0,0"
+                               Text="よく使う設定をこの PC に保存して、次回そのまま読み込めます。ファイルそのものは保存しないので、毎回そのときのファイルを選んでください。読み込んでも自動では実行しません。" />
+
+                    <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"
+                               Text="{Binding MessageText}"
+                               Visibility="{Binding HasMessage, Converter={StaticResource BoolToVis}}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#1F8A4C" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsMessageError}" Value="True">
+                                        <Setter Property="Foreground" Value="#B95E04" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
     </Window.Resources>
 
     <DockPanel Margin="16">
@@ -784,7 +847,10 @@
         </TabItem>
 
         <TabItem Header="4. セルをまとめて変更">
-            <Grid Margin="0,12,0,0" DataContext="{Binding Mutation}">
+            <DockPanel Margin="0,12,0,0" DataContext="{Binding Mutation}">
+            <ContentControl DockPanel.Dock="Top" Content="{Binding Recipes}"
+                            ContentTemplate="{StaticResource RecipeAreaTemplate}" />
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="8*" MinWidth="420" />
                     <ColumnDefinition Width="12" />
@@ -1091,10 +1157,14 @@
                     </DockPanel>
                 </Border>
             </Grid>
+            </DockPanel>
         </TabItem>
 
         <TabItem Header="5. 表から転記">
-            <Grid Margin="0,12,0,0" DataContext="{Binding Mapping}">
+            <DockPanel Margin="0,12,0,0" DataContext="{Binding Mapping}">
+            <ContentControl DockPanel.Dock="Top" Content="{Binding Recipes}"
+                            ContentTemplate="{StaticResource RecipeAreaTemplate}" />
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="9*" MinWidth="440" />
                     <ColumnDefinition Width="12" />
@@ -1446,10 +1516,14 @@
                     </DockPanel>
                 </Border>
             </Grid>
+            </DockPanel>
         </TabItem>
 
         <TabItem Header="6. 表を突合して更新">
-            <Grid Margin="0,12,0,0" DataContext="{Binding TableUpdate}">
+            <DockPanel Margin="0,12,0,0" DataContext="{Binding TableUpdate}">
+            <ContentControl DockPanel.Dock="Top" Content="{Binding Recipes}"
+                            ContentTemplate="{StaticResource RecipeAreaTemplate}" />
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="9*" MinWidth="440" />
                     <ColumnDefinition Width="12" />
@@ -1826,6 +1900,7 @@
                     </DockPanel>
                 </Border>
             </Grid>
+            </DockPanel>
         </TabItem>
 
         </TabControl>
