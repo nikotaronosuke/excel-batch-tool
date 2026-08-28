@@ -104,6 +104,7 @@ public sealed class CellMutationViewModel : ObservableObject
     private CellWriteKind _writeKind = CellWriteKind.Text;
     private string _statusText = "変更するシートとセルを指定して、プレビューを更新してください。";
     private string? _resultText;
+    private bool _lastRunSucceeded;
 
     public CellMutationViewModel()
     {
@@ -246,6 +247,13 @@ public sealed class CellMutationViewModel : ObservableObject
 
     public bool HasResult => !string.IsNullOrEmpty(ResultText);
 
+    /// <summary>直前の実行が成功したか。失敗の内容を成功と同じ見た目で出さないために使う。</summary>
+    public bool LastRunSucceeded
+    {
+        get => _lastRunSucceeded;
+        private set => SetProperty(ref _lastRunSucceeded, value);
+    }
+
     public CellMutationPreview? Preview => _preview;
 
     public bool HasPreview => _preview is not null && !IsPreviewStale;
@@ -363,6 +371,7 @@ public sealed class CellMutationViewModel : ObservableObject
             var preview = _preview;
             var result = await Task.Run(() => _mutator.Execute(preview));
 
+            LastRunSucceeded = result.Success;
             ResultText = result.Success
                 ? $"{result.Message}\n作成: {string.Join(" / ", result.OutputFileNames)}"
                 : result.Message;
@@ -377,6 +386,7 @@ public sealed class CellMutationViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            LastRunSucceeded = false;
             ResultText = $"作成に失敗しました: {ex.Message}";
             StatusText = "作成を実行できませんでした。";
         }

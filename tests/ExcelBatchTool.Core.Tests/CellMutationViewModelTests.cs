@@ -112,7 +112,24 @@ public sealed class CellMutationViewModelTests
 
         Assert.True(File.Exists(dir.File("大阪_変更済み.xlsx")));
         Assert.Contains("大阪_変更済み.xlsx", viewModel.ResultText);
+        Assert.True(viewModel.LastRunSucceeded);
         AssertStale(viewModel);
+    }
+
+    [Fact]
+    public async Task AFailedRunIsNotShownAsASuccess()
+    {
+        using var dir = new TempDir();
+        var viewModel = await BuildAsync(dir);
+
+        // 控えファイルの置き場所をフォルダーで塞ぎ、確定の途中で失敗させる。
+        Directory.CreateDirectory(dir.File("大阪_変更済み.xlsx.audit.json"));
+
+        await viewModel.ExecuteCommandAsync();
+
+        Assert.False(viewModel.LastRunSucceeded);
+        Assert.Contains("取り消しました", viewModel.ResultText);
+        Assert.DoesNotContain("作成していません", viewModel.ResultText);
     }
 
     [Fact]

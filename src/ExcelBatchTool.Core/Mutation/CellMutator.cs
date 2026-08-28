@@ -47,7 +47,11 @@ public sealed class CellMutator
             foreach (var file in preview.Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                pending.Add(BuildOutput(preview, file, cancellationToken));
+
+                // 作る前に一時ファイルの場所を控える。途中で失敗しても取り消し対象から漏れない。
+                var output = ReserveOutput(file);
+                pending.Add(output);
+                BuildOutput(preview, file, output, cancellationToken);
 
                 completed++;
                 progress?.Report(new CellMutationProgress(completed, preview.Files.Count));
@@ -72,14 +76,13 @@ public sealed class CellMutator
         }
         catch (OperationCanceledException)
         {
-            RollBack(pending, moved);
-            return CellMutationResult.Failed("一括変更を中止しました。新しいファイルは作成していません。");
+            return CellMutationResult.Failed(
+                Describe("一括変更を中止しました。", RollBack(pending, moved)));
         }
         catch (Exception ex)
         {
-            RollBack(pending, moved);
             return CellMutationResult.Failed(
-                $"一括変更に失敗しました: {ex.Message}(新しいファイルは作成していません)");
+                Describe($"一括変更に失敗しました: {ex.Message}", RollBack(pending, moved)));
         }
 
         var changeCount = preview.ChangeCount;
@@ -133,41 +136,38 @@ public sealed class CellMutator
         return null;
     }
 
-    /// <summary>元ファイルをコピーし、コピー側だけを変更して検証する。</summary>
-    private static PendingOutput BuildOutput(
-        CellMutationPreview preview,
-        CellMutationFilePlan file,
-        CancellationToken cancellationToken)
+    /// <summary>この出力に使う一時ファイルと確定先の組を決める(まだ何も作らない)。</summary>
+    private static PendingOutput ReserveOutput(CellMutationFilePlan file)
     {
         var directory = Path.GetDirectoryName(file.OutputPath)!;
         var id = Guid.NewGuid().ToString("N");
-        var tempWorkbook = Path.Combine(directory, $"~ebt-mut-{id}.xlsx");
-        var tempAudit = Path.Combine(directory, $"~ebt-mut-{id}.json");
 
-        var output = new PendingOutput(tempWorkbook, file.OutputPath, tempAudit, file.AuditPath);
+        return new PendingOutput(
+            Path.Combine(directory, $"~ebt-mut-{id}.xlsx"),
+            file.OutputPath,
+            Path.Combine(directory, $"~ebt-mut-{id}.json"),
+            file.AuditPath);
+    }
 
-        try
+    /// <summary>元ファイルをコピーし、コピー側だけを変更して検証する。</summary>
+    private static void BuildOutput(
+        CellMutationPreview preview,
+        CellMutationFilePlan file,
+        PendingOutput output,
+        CancellationToken cancellationToken)
+    {
+        // 元ファイルはここでしか読まない(読み取り専用のコピー)。
+        File.Copy(file.FilePath, output.TempWorkbookPath);
+
+        var applied = ApplyChanges(preview, file, output.TempWorkbookPath, cancellationToken);
+
+        if (Validate(output.TempWorkbookPath, preview, applied) is { } validationError)
         {
-            // 元ファイルはここでしか読まない(読み取り専用のコピー)。
-            File.Copy(file.FilePath, tempWorkbook);
-
-            var applied = ApplyChanges(preview, file, tempWorkbook, cancellationToken);
-
-            if (Validate(tempWorkbook, preview, applied) is { } validationError)
-            {
-                throw new InvalidOperationException(
-                    $"{file.FileName}: 出力ファイルの検証に失敗しました: {validationError}");
-            }
-
-            MutationAuditLog.Write(tempAudit, file, applied, Hash(tempWorkbook));
-            return output;
+            throw new InvalidOperationException(
+                $"{file.FileName}: 出力ファイルの検証に失敗しました: {validationError}");
         }
-        catch
-        {
-            DeleteQuietly(tempWorkbook);
-            DeleteQuietly(tempAudit);
-            throw;
-        }
+
+        MutationAuditLog.Write(output.TempAuditPath, file, applied, Hash(output.TempWorkbookPath));
     }
 
     /// <summary>
@@ -349,20 +349,47 @@ public sealed class CellMutator
         }
     }
 
-    /// <summary>失敗時は一時ファイルを消し、既に確定したものも取り消す。</summary>
-    private static void RollBack(IReadOnlyList<PendingOutput> pending, IReadOnlyList<string> moved)
+    /// <summary>
+    /// 失敗時は一時ファイルを消し、既に確定したものも取り消す。
+    /// 取り消しは best effort なので、消せたつもりで終わらせず、
+    /// 最後に本当に残っていないかを確かめて残存分を返す。
+    /// 実行前から在ったファイルには触れない(消したのは自分が作ったものだけ)。
+    /// </summary>
+    private RollbackOutcome RollBack(IReadOnlyList<PendingOutput> pending, IReadOnlyList<string> moved)
     {
-        foreach (var path in moved)
-        {
-            DeleteQuietly(path);
-        }
-
+        var candidates = new List<string>(moved);
         foreach (var output in pending)
         {
-            DeleteQuietly(output.TempWorkbookPath);
-            DeleteQuietly(output.TempAuditPath);
+            candidates.Add(output.TempWorkbookPath);
+            candidates.Add(output.TempAuditPath);
         }
+
+        var remaining = new List<string>();
+        foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            FileDeleter(path);
+
+            // 削除処理の戻り値ではなく、実際に残っているかどうかを最終判断にする。
+            if (File.Exists(path))
+            {
+                remaining.Add(Path.GetFileName(path));
+            }
+        }
+
+        return new RollbackOutcome(remaining);
     }
+
+    /// <summary>
+    /// 取り消しの結果を、断定しすぎずに伝える。残ったファイルはファイル名だけを出す
+    /// (利用者向けのメッセージに絶対パスを載せない)。
+    /// 元ファイルは読み取りしかしていないので、そこだけは断定してよい。
+    /// </summary>
+    private static string Describe(string reason, RollbackOutcome outcome)
+        => outcome.IsClean
+            ? $"{reason}作成途中のファイルは取り消しました。元のファイルは変更していません。"
+            : $"{reason}取り消せなかったファイルが残っている可能性があります。"
+                + $"次のファイルを確認してください: {string.Join(" / ", outcome.RemainingFileNames)}。"
+                + "元のファイルは変更していません。";
 
     internal static string Hash(string path)
     {
@@ -370,7 +397,13 @@ public sealed class CellMutator
         return Convert.ToHexString(SHA256.HashData(stream));
     }
 
-    private static void DeleteQuietly(string path)
+    /// <summary>
+    /// ファイルを 1 つ消す。消せたか(元から無かった場合も含む)を返す。
+    /// 取り消しが本当に効かない状況をテストで再現できるよう、ここだけ差し替えられるようにしている。
+    /// </summary>
+    internal Func<string, bool> FileDeleter { get; init; } = TryDeleteFile;
+
+    internal static bool TryDeleteFile(string path)
     {
         try
         {
@@ -378,12 +411,16 @@ public sealed class CellMutator
             {
                 File.Delete(path);
             }
+
+            return !File.Exists(path);
         }
         catch (IOException)
         {
+            return false;
         }
         catch (UnauthorizedAccessException)
         {
+            return false;
         }
     }
 
@@ -393,6 +430,12 @@ public sealed class CellMutator
         string WorkbookPath,
         string TempAuditPath,
         string AuditPath);
+
+    /// <summary>取り消しの結果。残ったものはファイル名だけを持つ。</summary>
+    private sealed record RollbackOutcome(IReadOnlyList<string> RemainingFileNames)
+    {
+        public bool IsClean => RemainingFileNames.Count == 0;
+    }
 }
 
 /// <summary>書き換えた 1 セルと、書き換え前の書式。</summary>
