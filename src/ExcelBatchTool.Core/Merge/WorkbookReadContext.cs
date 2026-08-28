@@ -26,22 +26,48 @@ internal enum NumberFormatKind
 internal sealed class WorkbookReadContext
 {
     private readonly string[] _sharedStrings;
+    private readonly bool[] _sharedStringIsRichText;
     private readonly NumberFormatKind[] _styleKinds;
     private readonly bool _date1904;
 
-    private WorkbookReadContext(string[] sharedStrings, NumberFormatKind[] styleKinds, bool date1904)
+    private WorkbookReadContext(
+        string[] sharedStrings,
+        bool[] sharedStringIsRichText,
+        NumberFormatKind[] styleKinds,
+        bool date1904)
     {
         _sharedStrings = sharedStrings;
+        _sharedStringIsRichText = sharedStringIsRichText;
         _styleKinds = styleKinds;
         _date1904 = date1904;
     }
 
     public static WorkbookReadContext Create(WorkbookPart workbookPart)
     {
-        var sharedStrings = LoadSharedStrings(workbookPart);
+        var (sharedStrings, richFlags) = LoadSharedStrings(workbookPart);
         var styleKinds = LoadStyleKinds(workbookPart);
         var date1904 = workbookPart.Workbook?.WorkbookProperties?.Date1904?.Value ?? false;
-        return new WorkbookReadContext(sharedStrings, styleKinds, date1904);
+        return new WorkbookReadContext(sharedStrings, richFlags, styleKinds, date1904);
+    }
+
+    /// <summary>この Workbook が 1904 date system か。</summary>
+    public bool IsDate1904 => _date1904;
+
+    /// <summary>
+    /// このセルが「文字単位の書式(リッチテキスト)を持つ共有文字列」を参照しているか。
+    /// リッチテキストは書式を落とさずに移せないため、呼び出し側で明示的に扱う。
+    /// </summary>
+    public bool ReferencesRichText(Cell cell)
+    {
+        if (cell.DataType?.Value != CellValues.SharedString)
+        {
+            return false;
+        }
+
+        return int.TryParse(cell.CellValue?.InnerText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
+            && index >= 0
+            && index < _sharedStringIsRichText.Length
+            && _sharedStringIsRichText[index];
     }
 
     /// <summary>セルの値を読む。日付は 1900 date system の serial 値へ正規化する。</summary>
@@ -148,25 +174,31 @@ internal sealed class WorkbookReadContext
         return _styleKinds[index];
     }
 
-    private static string[] LoadSharedStrings(WorkbookPart workbookPart)
+    private static (string[] Values, bool[] IsRichText) LoadSharedStrings(WorkbookPart workbookPart)
     {
         var part = workbookPart.SharedStringTablePart;
         if (part is null)
         {
-            return [];
+            return ([], []);
         }
 
         var values = new List<string>();
+        var richFlags = new List<bool>();
+
         using var reader = OpenXmlReader.Create(part);
         while (reader.Read())
         {
             if (reader.IsStartElement && reader.ElementType == typeof(SharedStringItem))
             {
-                values.Add(((SharedStringItem)reader.LoadCurrentElement()!).InnerText);
+                var item = (SharedStringItem)reader.LoadCurrentElement()!;
+                values.Add(item.InnerText);
+
+                // 書式付きの run(rPr を持つ)を含むものをリッチテキストとみなす。
+                richFlags.Add(item.Descendants<RunProperties>().Any());
             }
         }
 
-        return [.. values];
+        return ([.. values], [.. richFlags]);
     }
 
     private static NumberFormatKind[] LoadStyleKinds(WorkbookPart workbookPart)

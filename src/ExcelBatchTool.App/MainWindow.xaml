@@ -562,6 +562,226 @@
             </Grid>
         </TabItem>
 
+        <TabItem Header="3. シートをまとめる">
+            <Grid Margin="0,12,0,0" DataContext="{Binding Aggregation}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="8*" MinWidth="420" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="8*" MinWidth="380" />
+                </Grid.ColumnDefinitions>
+
+                <!-- シートの選択 -->
+                <Border Grid.Column="0" Background="#FFFFFF" BorderBrush="#D8DCE3"
+                        BorderThickness="1" CornerRadius="4">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="まとめるシートを選ぶ"
+                                   FontSize="13" FontWeight="SemiBold" Foreground="#3B4252"
+                                   Margin="12,10,12,2" />
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap"
+                                   Text="選んだシートを、新しい 1 つのブックにシートとして並べます。行データは混ぜません。入力ファイルは変更しません。"
+                                   FontSize="11" Foreground="#8A8F98" Margin="12,0,12,8" />
+
+                        <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="#E2E5EA"
+                                BorderThickness="0,1,0,0" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock FontSize="11" Foreground="#8A8F98" TextWrapping="Wrap"
+                                           Text="出力シート名は編集できます。31 文字まで、: \ / ? * [ ] は使えません。" />
+                                <Button Content="プレビューを更新" Margin="0,8,0,0" Padding="14,7"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding RefreshPreviewCommand}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Grid>
+                            <TextBlock Text="「1. 解析結果」タブで Excel ファイルを追加すると、ここにシートが表示されます。"
+                                       FontSize="12" Foreground="#8A8F98" TextWrapping="Wrap"
+                                       TextAlignment="Center" MaxWidth="300" Margin="12"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasWorkbooks}" Value="False">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="8,0,8,0"
+                                          Visibility="{Binding HasWorkbooks, Converter={StaticResource BoolToVis}}">
+                                <ItemsControl ItemsSource="{Binding Workbooks}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,0,0,8">
+                                                <Border Background="#F1F3F6" Padding="8,5" CornerRadius="3">
+                                                    <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#3B4252"
+                                                               Text="{Binding FileName}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding FilePath}" />
+                                                </Border>
+
+                                                <TextBlock FontSize="11" Foreground="#C0392B" TextWrapping="Wrap"
+                                                           Margin="8,4,0,0" Text="{Binding UnavailableReason}"
+                                                           Visibility="{Binding HasUnavailableReason, Converter={StaticResource BoolToVis}}" />
+
+                                                <ItemsControl ItemsSource="{Binding Sheets}" Margin="8,2,0,0"
+                                                              Visibility="{Binding CanSelect, Converter={StaticResource BoolToVis}}">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Grid Margin="0,3,0,3">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                    <ColumnDefinition Width="*" MinWidth="80" />
+                                                                    <ColumnDefinition Width="150" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <CheckBox Grid.Column="0" VerticalAlignment="Center"
+                                                                          Margin="0,0,6,0"
+                                                                          IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                                                <TextBlock Grid.Column="1" FontSize="12"
+                                                                           VerticalAlignment="Center"
+                                                                           Text="{Binding DisplayName}"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           ToolTip="{Binding DisplayName}" />
+                                                                <TextBox Grid.Column="2" FontSize="12" Height="24"
+                                                                         VerticalContentAlignment="Center"
+                                                                         ToolTip="出力シート名"
+                                                                         IsEnabled="{Binding IsSelected}"
+                                                                         Text="{Binding OutputName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </Grid>
+                    </DockPanel>
+                </Border>
+
+                <!-- 集約プレビュー -->
+                <Border Grid.Column="2" Background="#FFFFFF" BorderBrush="#D8DCE3"
+                        BorderThickness="1" CornerRadius="4">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="集約プレビュー"
+                                   FontSize="13" FontWeight="SemiBold" Foreground="#3B4252"
+                                   Margin="14,10,14,6" />
+
+                        <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="#E2E5EA"
+                                BorderThickness="0,1,0,0" Padding="14,10">
+                            <StackPanel>
+                                <Button Content="ブックを作成" Style="{StaticResource ActionButton}"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding CreateCommand}" />
+                                <TextBlock FontSize="11" Foreground="#8A8F98" Margin="0,6,0,0" TextWrapping="Wrap"
+                                           Text="新しい .xlsx を作成します。既存ファイルは上書きしません。" />
+                                <Border Background="#F1F7F2" BorderBrush="#BFD9C4" BorderThickness="1"
+                                        CornerRadius="4" Padding="10,8" Margin="0,8,0,0"
+                                        Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+                                        <TextBlock FontSize="12" Foreground="#1F6B3A" TextWrapping="Wrap"
+                                                   Text="{Binding ResultText}" />
+                                        <TextBlock FontSize="11" Foreground="#5B6472" Margin="0,3,0,0"
+                                                   Text="{Binding ResultPath}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding ResultPath}"
+                                                   Visibility="{Binding HasResultPath, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="14,0,14,0">
+                            <StackPanel>
+                                <TextBlock FontSize="12" Foreground="#5B6472" TextWrapping="Wrap"
+                                           Text="{Binding StatusText}" />
+
+                                <StackPanel Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}">
+                                    <Border Background="#F7F8FA" BorderBrush="#E2E5EA" BorderThickness="1"
+                                            CornerRadius="4" Padding="10,8" Margin="0,8,0,0">
+                                        <StackPanel>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="対象" Width="42" FontSize="11" Foreground="#8A8F98" />
+                                                <TextBlock FontSize="12" Foreground="#2E3440"
+                                                           Text="{Binding TargetSummaryText}" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="出力" Width="42" FontSize="11" Foreground="#8A8F98" />
+                                                <TextBlock FontSize="12" Foreground="#2E3440" TextWrapping="Wrap"
+                                                           Text="{Binding PlannedSheetsText}" />
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="確認" Width="42" FontSize="11" Foreground="#8A8F98" />
+                                                <TextBlock FontSize="12" Foreground="#2E3440"
+                                                           Text="{Binding IssueSummaryText}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- 実行可否に直結するため、シート一覧より先に確認事項を出す。 -->
+                                    <TextBlock Text="確認事項" Style="{StaticResource SectionTitle}" />
+
+                                    <TextBlock FontSize="12" Foreground="#1F8A4C"
+                                               Text="✅ 実行を妨げる問題はありません。"
+                                               Visibility="{Binding HasNoIssues, Converter={StaticResource BoolToVis}}" />
+
+                                    <ItemsControl ItemsSource="{Binding Issues}"
+                                                  Visibility="{Binding HasIssues, Converter={StaticResource BoolToVis}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#FBFCFD" BorderBrush="#E2E5EA" BorderThickness="1"
+                                                        CornerRadius="4" Padding="10,8" Margin="0,0,0,6">
+                                                    <StackPanel>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Style="{StaticResource MergeIssueGlyphText}"
+                                                                       Text="{Binding Glyph}" Margin="0,0,6,0" />
+                                                            <TextBlock FontSize="12" FontWeight="SemiBold"
+                                                                       Foreground="#2E3440" Text="{Binding Location}"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                        <TextBlock FontSize="11" Foreground="#5B6472" Margin="19,3,0,0"
+                                                                   Text="{Binding Message}" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <TextBlock Text="出力するシートの順序" Style="{StaticResource SectionTitle}" />
+                                    <ItemsControl ItemsSource="{Binding OrderedSheets}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="26" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" FontSize="12" Foreground="#8A8F98"
+                                                               Text="{Binding Order, StringFormat={}{0}.}" />
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock FontSize="12" Foreground="#2E3440"
+                                                                   Text="{Binding OutputSheetName}"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock FontSize="11" Foreground="#8A8F98"
+                                                                   Text="{Binding SourceDisplay, StringFormat=← {0}}"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   ToolTip="{Binding SourceDisplay}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </TabItem>
+
         </TabControl>
     </DockPanel>
 </Window>
