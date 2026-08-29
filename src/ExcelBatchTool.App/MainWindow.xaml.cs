@@ -12,7 +12,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        _viewModel = new MainViewModel(PickFiles, PickSavePath, PickSourceFile);
+        _viewModel = new MainViewModel(
+            PickFiles, PickSavePath, PickSourceFile, recipeStore: null, pickPdfFile: PickPdfFile);
         DataContext = _viewModel;
     }
 
@@ -22,6 +23,17 @@ public partial class MainWindow : Window
         {
             Title = "転記元のファイルを選択",
             Filter = "Excel ブック / CSV (*.xlsx;*.csv)|*.xlsx;*.csv",
+        };
+
+        return dialog.ShowDialog() == true ? dialog.FileName : null;
+    }
+
+    private static string? PickPdfFile()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "読み取る PDF を選択",
+            Filter = "PDF ファイル (*.pdf)|*.pdf",
         };
 
         return dialog.ShowDialog() == true ? dialog.FileName : null;
