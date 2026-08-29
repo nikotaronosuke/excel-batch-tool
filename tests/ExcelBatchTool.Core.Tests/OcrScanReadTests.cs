@@ -637,7 +637,7 @@ public sealed class OcrScanReadTests
         Assert.Empty(reading.Issues);
 
         // 傾いていないページは回さない。傾いたページだけ逆向きに回して読む。
-        Assert.Equal([0, -3.4], engine.DeskewAngles);
+        Assert.Equal([0, 3.4], engine.DeskewAngles);
         Assert.NotEmpty(reading.Items);
     }
 

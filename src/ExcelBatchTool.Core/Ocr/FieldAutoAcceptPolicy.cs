@@ -39,6 +39,10 @@ public static class FieldAutoAcceptPolicy
     /// </summary>
     private const string Confusable = "0O1lI5S8B2Z6G9qg";
 
+    /// <summary>桁区切りを上下逆に読んだときに出る記号(アポストロフィの類)。</summary>
+    private static readonly char[] RotatedSeparators =
+        ['\u0027', '`', '\u2019', '\u02BC'];
+
     /// <summary>数量・金額として自然な字。これ以外が出たら形が壊れている。</summary>
     private const string NumberShape = "0123456789,.-+()%¥$ 　";
 
@@ -74,6 +78,49 @@ public static class FieldAutoAcceptPolicy
 
         return true;
     }
+
+    /// <summary>
+    /// 上下逆に読んでも別の正しい数に見えてしまう字だけでできているか。
+    ///
+    /// 0・1・8 は上下逆でも同じ形、6 と 9 は互いに入れ替わる。
+    /// つまり「90」を上下逆に読むと「06」になり、**どちらも数として正しい**。
+    /// 実測で残った誤確定はすべてこの形だった:
+    ///   「90」→「06」(自信 99.1〜99.8%)、「99」→「66」(自信 99.2〜99.7%)。
+    /// 切り出しが上下逆のまま両モデルへ渡るので、一致も自信も根拠にならず、
+    /// 列の中の文字の種類も同じ(どちらも数字)なので他の安全弁にも掛からない。
+    ///
+    /// もう 1 つ、**桁区切りが上下逆になった跡**も見る。カンマを上下逆に読むと
+    /// アポストロフィになるため、「99,660」が「099'66」として出てくる
+    /// (実測。自信 99.0% で自動確定していた)。数字の並びだけを見ると
+    /// 列の中で浮かないので、記号のほうで気づく。
+    /// </summary>
+    public static bool IsUpsideDownAmbiguous(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        // 桁区切りが上下逆になった跡。数量・金額にこの記号は出てこない。
+        if (text.IndexOfAny(RotatedSeparators) >= 0)
+        {
+            return true;
+        }
+
+        foreach (var c in text)
+        {
+            if (c is not ('0' or '1' or '6' or '8' or '9'))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public const string UpsideDownReason =
+        "上下逆に読んでも数として成り立つ値です(6 と 9 など)。"
+        + "元のページと見比べてください。";
 
     /// <summary>自動確定を見送った理由。確認画面にそのまま出す。</summary>
     public static string ReasonFor(FormFieldKind kind) => kind switch

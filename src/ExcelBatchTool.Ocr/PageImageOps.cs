@@ -28,6 +28,63 @@ internal static class PageImageOps
     /// そのままだと文字の行より強く効いて角度がまるで当てにならなくなる
     /// (実測: 傾き 0 度の罫線表が「6 度超」と判定されて止まった)。
     /// </summary>
+    /// <summary>
+    /// 罫線そのものから傾きを測る。
+    ///
+    /// 罫線のある表では、こちらのほうが文字の塊より正確に測れる。罫線はページを
+    /// 横切るほど長く、途切れも少ないため、角度がほとんどぶれない。
+    ///
+    /// なぜ要るか: 文字から測った角度で直しても、わずかな残り傾き
+    /// (平均 0.33 度)が残る。表ではこれが致命的で、ページの端へ行くほど
+    /// 行がずれ、**セルの中身が 1 行ずつずれた表**が出来上がる。実測では
+    /// 2 度傾いた罫線表でセル一致 19.0%、誤って自動確定したセルが 112 件だった。
+    /// しかも中身は埋まっていて列の形も揃うので、どの安全弁にも掛からない。
+    /// </summary>
+    public static (double Degrees, bool Reliable) SkewFromRulings(Mat forRulings)
+    {
+        // 直線そのものを探す。横向きの型で抜く方法は使えない
+        //  ― 2 度傾いただけで、幅 2000 画素の罫線は端で 70 画素も下がるため、
+        //    まっすぐな型には一切引っかからない(実測で罫線 0 本になっていた)。
+        var minimumLength = Math.Max(forRulings.Width / 3, 60);
+        using var segments = new Mat();
+        var lines = Cv2.HoughLinesP(
+            forRulings,
+            rho: 1,
+            theta: Math.PI / 1800,
+            threshold: minimumLength / 2,
+            minLineLength: minimumLength,
+            maxLineGap: 20);
+
+        var angles = new List<double>();
+        foreach (var line in lines)
+        {
+            var dx = (double)(line.P2.X - line.P1.X);
+            var dy = (double)(line.P2.Y - line.P1.Y);
+            if (Math.Abs(dx) < 1)
+            {
+                continue;
+            }
+
+            var angle = Math.Atan2(dy, dx) * 180 / Math.PI;
+
+            // 横罫線だけを見る(縦罫線と枠の縁は除く)。
+            if (Math.Abs(angle) > 20)
+            {
+                continue;
+            }
+
+            angles.Add(angle);
+        }
+
+        if (angles.Count < 3)
+        {
+            return (0, false);
+        }
+
+        angles.Sort();
+        return (angles[angles.Count / 2], true);
+    }
+
     public static (double Degrees, bool Reliable) Skew(Mat binary)
     {
         using var withoutRulings = RemoveRulings(binary);

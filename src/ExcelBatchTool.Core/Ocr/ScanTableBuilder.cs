@@ -4,6 +4,16 @@ namespace ExcelBatchTool.Core.Ocr;
 public sealed record ScanTableCell(int Row, int Column, string Text, OcrBox Box, double Confidence)
 {
     public bool IsEmpty => Text.Length == 0;
+
+    /// <summary>
+    /// 縦に離れた複数の読み取りを 1 つのセルへまとめた。
+    ///
+    /// 罫線が拾えず 2 行分が 1 つの区画に入ったときにこうなる。実測では
+    /// 「A0017」と「A0018」が「A0017A0018」という 1 セルになり、自信 99.6% で
+    /// 自動確定していた(行の区切りを間違えているので、自信も一致も当てにならない)。
+    /// 区画を割り直しても解消しなかったものだけがここへ残る。
+    /// </summary>
+    public bool IsMerged { get; init; }
 }
 
 /// <summary>スキャンされた表を行・列へ戻した結果。</summary>
@@ -80,8 +90,9 @@ public static class ScanTableBuilder
         // こうしないと、いちばん左と右の列がまるごと落ちる(実測で 4 列 → 2 列になった)。
         var columns = Extend(
             columnLines, lines.Select(line => (line.Box.CenterX, line.Box.X, line.Box.Right)));
-        var rows = Extend(
-            rowLines, lines.Select(line => (line.Box.CenterY, line.Box.Y, line.Box.Bottom)));
+        var rows = SplitTallBands(
+            Extend(rowLines, lines.Select(line => (line.Box.CenterY, line.Box.Y, line.Box.Bottom))),
+            lines);
 
         var rowCount = rows.Count - 1;
         var columnCount = columns.Count - 1;
@@ -218,7 +229,10 @@ public static class ScanTableBuilder
                 // セル内で行が分かれていても 1 つの値にまとめる。
                 string.Concat(parts),
                 Union(ordered.Select(piece => piece.Line.Box)),
-                parts.Count == 0 ? 0 : confidence));
+                parts.Count == 0 ? 0 : confidence)
+            {
+                IsMerged = HasVerticalGap(ordered.Select(piece => piece.Line.Box)),
+            });
         }
 
         return new ScanTable(rows, columns, cells, fromRulings);
@@ -315,6 +329,97 @@ public static class ScanTableBuilder
     }
 
     /// <summary>座標がどの罫線の間にあるか。外なら -1。</summary>
+    /// <summary>
+    /// 縦に離れた読み取りが混じっているか。重なっていれば同じ行の続き
+    /// (ふりがな等)、離れていれば別の行を巻き込んでいる。
+    /// </summary>
+    internal static bool HasVerticalGap(IEnumerable<OcrBox> boxes)
+    {
+        var ordered = boxes.OrderBy(box => box.Y).ToList();
+        for (var index = 1; index < ordered.Count; index++)
+        {
+            if (ordered[index].Y > ordered[index - 1].Bottom)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 罫線が拾えずに 2 行分が 1 区画へ入ったところを割り直す。
+    ///
+    /// 実測では、表のいちばん下のほうで細い罫線が落ち、GT の 4 行が 2 区画に
+    /// 収まって「A0017A0018」のような値ができていた。区画の高さが他より明らかに
+    /// 高く、その中の文字が縦に離れた塊へ分かれるときだけ、塊の間へ区切りを足す。
+    ///
+    /// 高さで判断するのは、セル内で折り返した長い文章を割ってしまわないため
+    /// (折り返しは区画の高さを増やさない)。
+    /// </summary>
+    internal static List<double> SplitTallBands(
+        List<double> boundaries, IReadOnlyList<OcrRawLine> lines)
+    {
+        if (boundaries.Count < 3)
+        {
+            return boundaries;
+        }
+
+        var heights = new List<double>();
+        for (var index = 1; index < boundaries.Count; index++)
+        {
+            heights.Add(boundaries[index] - boundaries[index - 1]);
+        }
+
+        var median = heights.OrderBy(height => height).ElementAt(heights.Count / 2);
+        if (median <= 0)
+        {
+            return boundaries;
+        }
+
+        var added = new List<double>();
+        for (var index = 1; index < boundaries.Count; index++)
+        {
+            var top = boundaries[index - 1];
+            var bottom = boundaries[index];
+            if (bottom - top < median * 1.5)
+            {
+                continue;
+            }
+
+            // この区画に入る文字を、縦に離れた塊へ分ける。
+            var inside = lines
+                .Where(line => line.Box.CenterY > top && line.Box.CenterY < bottom)
+                .OrderBy(line => line.Box.Y)
+                .ToList();
+
+            var clusters = new List<(double Top, double Bottom)>();
+            foreach (var line in inside)
+            {
+                if (clusters.Count > 0 && line.Box.Y <= clusters[^1].Bottom)
+                {
+                    clusters[^1] = (clusters[^1].Top, Math.Max(clusters[^1].Bottom, line.Box.Bottom));
+                }
+                else
+                {
+                    clusters.Add((line.Box.Y, line.Box.Bottom));
+                }
+            }
+
+            for (var cluster = 1; cluster < clusters.Count; cluster++)
+            {
+                added.Add((clusters[cluster - 1].Bottom + clusters[cluster].Top) / 2);
+            }
+        }
+
+        if (added.Count == 0)
+        {
+            return boundaries;
+        }
+
+        return [.. boundaries.Concat(added).OrderBy(value => value)];
+    }
+
     internal static int Band(IReadOnlyList<double> lines, double value)
     {
         for (var index = 0; index + 1 < lines.Count; index++)

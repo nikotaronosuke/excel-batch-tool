@@ -145,7 +145,7 @@ public static class FormFieldExtractor
                 confidence = Math.Min(confidence, score);
             }
 
-            var joined = string.Join(" ", parts).Trim();
+            var joined = StripLabel(field.Name, string.Join(" ", parts).Trim());
 
             readings.Add(joined.Length == 0
                 ? new FormFieldReading(
@@ -159,6 +159,38 @@ public static class FormFieldExtractor
         }
 
         return readings;
+    }
+
+    /// <summary>
+    /// 「項目名: 値」と 1 行に印字されている帳票で、項目名のほうを外す。
+    ///
+    /// 多くの帳票は「年齢: 58」のように見出しと値を同じ行へ刷る。1 行として
+    /// 読み取られるので、指定した領域が値だけを囲んでいても見出しごと返ってしまう。
+    /// 実測では 120 ページのアンケートで、年齢と自由記述の全ページがこうなり、
+    /// 「年齢:20」のまま自信 99.7% で自動確定していた。
+    ///
+    /// **外すのは、利用者が付けた項目名と一致する前置きだけ。** 前が項目名でなければ
+    /// 何もしない。区切りより後ろを機械的に採ると、値の中の「:」で切ってしまう。
+    /// </summary>
+    internal static string StripLabel(string fieldName, string text)
+    {
+        if (fieldName.Length == 0 || text.Length <= fieldName.Length)
+        {
+            return text;
+        }
+
+        if (!text.StartsWith(fieldName, StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var rest = text[fieldName.Length..].TrimStart();
+        if (rest.Length == 0 || rest[0] is not (':' or '：'))
+        {
+            return text;
+        }
+
+        return rest[1..].Trim();
     }
 
     /// <summary>2 つの領域の重なりを、小さいほうに対する割合で返す。</summary>

@@ -27,6 +27,7 @@ public sealed class PaddleOcrEngine : IOcrEngine
     private readonly PaddleOcrClassifier _classifier;
     private readonly PaddleOcrRecognizer _multi;
     private readonly PaddleOcrRecognizer _japan;
+    private readonly OcrModelSet _set;
 
     public PaddleOcrEngine()
         : this(Path.GetDirectoryName(typeof(PaddleOcrEngine).Assembly.Location)!)
@@ -38,6 +39,16 @@ public sealed class PaddleOcrEngine : IOcrEngine
         _root = packDirectory;
 
         var models = Path.Combine(_root, "models");
+        var set = OcrModelSet.Load(models);
+        _set = set;
+
+        static ModelVersion Version(int v) => v switch
+        {
+            5 => ModelVersion.V5,
+            4 => ModelVersion.V4,
+            3 => ModelVersion.V3,
+            _ => ModelVersion.V2,
+        };
 
         // 推論の実行方式は実測で選んだ(同じモデル・同じページでの 1 ページあたり):
         //   OpenBLAS 22.8 秒 / oneDNN 23.2 秒 / **ONNX 3.3 秒**
@@ -47,7 +58,9 @@ public sealed class PaddleOcrEngine : IOcrEngine
         void Device(PaddleConfig config) => PaddleDevice.Onnx(cpuMathThreadCount: threads)(config);
 
         _detector = new PaddleOcrDetector(
-            new FileDetectionModel(Path.Combine(models, "det"), ModelVersion.V4), Device)
+            new FileDetectionModel(
+                Path.Combine(models, set.DetectionDirectory), Version(set.DetectionVersion)),
+            Device)
         {
             // 検出した枠の「確からしさ」で切り落とす処理は使わない。
             //
@@ -62,29 +75,31 @@ public sealed class PaddleOcrEngine : IOcrEngine
             BoxScoreThreahold = null,
         };
         _classifier = new PaddleOcrClassifier(
-            new FileClassificationModel(Path.Combine(models, "cls"), ModelVersion.V2), Device);
+            new FileClassificationModel(
+                Path.Combine(models, set.ClassificationDirectory), ModelVersion.V2),
+            Device);
 
         // 向きの判定は既定のまま使う。効きを弱めると読み取りが落ちることを実測した
         // (罫線表のセル一致 61.3% → 38.7%、罫線なし 87.9% → 64.3%)。
         // 検出した枠は上下が逆のまま返ることが多く、この判定がそれを直している。
         _multi = new PaddleOcrRecognizer(
             new FileRecognizationModel(
-                Path.Combine(models, "rec-multi"),
-                Path.Combine(models, "rec-multi", "dict.txt"),
-                ModelVersion.V4),
+                Path.Combine(models, set.PrimaryDirectory),
+                Path.Combine(models, set.PrimaryDirectory, "dict.txt"),
+                Version(set.PrimaryVersion)),
             Device);
         _japan = new PaddleOcrRecognizer(
             new FileRecognizationModel(
-                Path.Combine(models, "rec-japan"),
-                Path.Combine(models, "rec-japan", "dict.txt"),
-                ModelVersion.V4),
+                Path.Combine(models, set.SecondaryDirectory),
+                Path.Combine(models, set.SecondaryDirectory, "dict.txt"),
+                Version(set.SecondaryVersion)),
             Device);
     }
 
-    public OcrEngineInfo Info { get; } = new(
-        "ch_PP-OCRv4_rec",
-        "japan_PP-OCRv4_rec",
-        "Paddle Inference 2.6.1",
+    public OcrEngineInfo Info => new(
+        _set.PrimaryName,
+        _set.SecondaryName,
+        _set.Runtime,
         "ONNX Runtime",
         OcrDpi);
 
@@ -111,8 +126,18 @@ public sealed class PaddleOcrEngine : IOcrEngine
             using var binary = PageImageOps.Binarize(mat);
             using var forRulings = PageImageOps.BinarizeForRulings(mat);
 
-            var (degrees, reliable) = PageImageOps.Skew(binary);
             var (rows, columns) = PageImageOps.Rulings(forRulings);
+
+            // 長い直線が引けるページは、罫線から角度を測る(そのほうが正確)。
+            // 表では残り傾きがそのまま行のずれになるため、ここの精度が効く。
+            // 傾いていると罫線は「まっすぐな線」としては拾えないので、
+            // 角度を問わず直線を探す方法で測る。
+            var (degrees, reliable) = PageImageOps.SkewFromRulings(forRulings);
+
+            if (!reliable)
+            {
+                (degrees, reliable) = PageImageOps.Skew(binary);
+            }
 
             return new OcrPageProbe(pageNumber, degrees, rows.Count, columns.Count)
             {
@@ -215,7 +240,7 @@ public sealed class PaddleOcrEngine : IOcrEngine
             using var page = Render(pdf, pageNumber, OcrDpi);
             using var mat = deskewDegrees == 0
                 ? page.Clone()
-                : PageImageOps.Rotate(page, -deskewDegrees, out _);
+                : PageImageOps.Rotate(page, deskewDegrees, out _);
             using var gray = mat.CvtColor(ColorConversionCodes.BGR2GRAY);
 
             return [.. areas.Select(area => PageImageOps.InkRatio(gray, area))];
@@ -243,6 +268,19 @@ public sealed class PaddleOcrEngine : IOcrEngine
         {
             using var bitmap = PDFtoImage.Conversion.ToImage(
                 bytes, page: pageNumber - 1, options: new PDFtoImage.RenderOptions(Dpi: dpi));
+
+            // 巨大なページでメモリーを使い切らないように区切る。
+            // A4 は 300dpi で約 870 万画素。ここまで来ると図面のような特殊な PDF で、
+            // 黙って落ちるより理由を出して止めたほうがよい。
+            var pixels = (long)bitmap.Width * bitmap.Height;
+            if (pixels > ExcelBatchTool.Core.Pdf.PdfReadDefaults.MaxRenderedPixelsPerPage)
+            {
+                throw new OcrPageTooLargeException(
+                    $"{pageNumber} ページ目が大きすぎます"
+                        + $"({bitmap.Width:N0} × {bitmap.Height:N0} 画素)。"
+                        + "このページは読み取れません。");
+            }
+
             using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
             using var encoded = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
             return Cv2.ImDecode(encoded.ToArray(), ImreadModes.Color);

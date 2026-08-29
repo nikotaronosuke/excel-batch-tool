@@ -23,6 +23,9 @@ public enum RecipeType
 
     /// <summary>「7. CSV を変換」の設定。</summary>
     CsvTransform,
+
+    /// <summary>「8. PDF を読み取る」の設定。</summary>
+    PdfRead,
 }
 
 /// <summary>JSON 上の固定文字列と C# 側の型との対応。</summary>
@@ -32,6 +35,7 @@ public static class RecipeJsonNames
     public const string SourceToFixedCells = "source-to-fixed-cells";
     public const string SourceTableToTargetTable = "source-table-to-target-table";
     public const string CsvTransform = "csv-transform";
+    public const string PdfRead = "pdf-read";
 
     public const string Text = "text";
     public const string Number = "number";
@@ -56,6 +60,7 @@ public static class RecipeJsonNames
         RecipeType.CellInputSet => CellInputSet,
         RecipeType.SourceToFixedCells => SourceToFixedCells,
         RecipeType.SourceTableToTargetTable => SourceTableToTargetTable,
+        RecipeType.PdfRead => PdfRead,
         _ => CsvTransform,
     };
 
@@ -107,6 +112,7 @@ internal sealed class RecipeTypeConverter : JsonConverter<RecipeType>
             RecipeJsonNames.SourceToFixedCells => RecipeType.SourceToFixedCells,
             RecipeJsonNames.SourceTableToTargetTable => RecipeType.SourceTableToTargetTable,
             RecipeJsonNames.CsvTransform => RecipeType.CsvTransform,
+            RecipeJsonNames.PdfRead => RecipeType.PdfRead,
             var other => throw new JsonException($"未知の処理の種類です: {other}"),
         };
 
@@ -345,6 +351,72 @@ public sealed record SavedRecipe
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CsvTransformRecipe? CsvTransform { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PdfReadRecipe? PdfRead { get; init; }
+}
+
+/// <summary>
+/// 「8. PDF を読み取る」の設定。
+///
+/// **PDF そのものに関わるものは何も保存しない。**
+/// 元のファイル名・保存場所・読み取った文字・ページの中身・個人情報の実値は入れない。
+/// 入れるのは「どう読むか」の設定だけで、同じ様式の帳票を毎月受け取るときに
+/// 項目を作り直さずに済むようにするためのもの。
+/// </summary>
+public sealed record PdfReadRecipe
+{
+    /// <summary>読み取り方(文章 / 表 / 同じ様式の帳票)。</summary>
+    public string ReadMode { get; init; } = string.Empty;
+
+    /// <summary>出力形式(Excel / CSV)。</summary>
+    public string OutputFormat { get; init; } = string.Empty;
+
+    public string OutputSuffix { get; init; } = string.Empty;
+
+    /// <summary>CSV のときの文字コードと引用の扱い。</summary>
+    public CsvOutputEncoding Encoding { get; init; }
+
+    public CsvQuoteMode QuoteMode { get; init; }
+
+    /// <summary>同じ様式の帳票として読むときの項目。</summary>
+    public IReadOnlyList<PdfReadRecipeField> Fields { get; init; } = [];
+}
+
+/// <summary>帳票の 1 項目の設定。読み取った値は保存しない。</summary>
+public sealed record PdfReadRecipeField
+{
+    public string Name { get; init; } = string.Empty;
+
+    /// <summary>項目の種類(そのままの文字 / 数量・金額 / コード / 選択)。</summary>
+    public string Kind { get; init; } = string.Empty;
+
+    public bool IsRequired { get; init; }
+
+    /// <summary>読み取る場所(300dpi のページ座標)。</summary>
+    public double X { get; init; }
+
+    public double Y { get; init; }
+
+    public double Width { get; init; }
+
+    public double Height { get; init; }
+
+    /// <summary>選択項目の選択肢(位置つき)。</summary>
+    public IReadOnlyList<PdfReadRecipeChoice> Choices { get; init; } = [];
+}
+
+public sealed record PdfReadRecipeChoice
+{
+    public string Label { get; init; } = string.Empty;
+
+    public double X { get; init; }
+
+    public double Y { get; init; }
+
+    public double Width { get; init; }
+
+    public double Height { get; init; }
 }
 
 /// <summary>レシピファイル全体。</summary>

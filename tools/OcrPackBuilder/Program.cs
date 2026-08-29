@@ -1,3 +1,4 @@
+using ExcelBatchTool.Ocr;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -54,16 +55,66 @@ foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirec
 
 Console.WriteLine($"copied {copied} files from the published OCR implementation");
 
-// 2. モデルを取り出す。日本語専用 rec を使うため Paddle 2.x 系の版に固定している。
+// 2. モデルを取り出す。
+//
+//    どのモデルを入れるかは引数で選べる(既定 v5japan)。Phase 2F-B3 で、
+//    「今までの v4 二重読み」と「PP-OCRv5 + 日本語 v4」を **同じ製品経路のまま**
+//    比べるために、Pack を組み替えるだけで構成を変えられるようにした。
+//
+//    Paddle Inference 3.3.1 では PP-OCRv5 と japan_PP-OCRv4 が同じプロセスへ
+//    両方読み込める(2F-B1 の「同居できない」は 3.0.x の話で、3.3.1 では再現しない)。
+//    そのため別プロセスも IPC も要らない。
 var models = Path.Combine(target, "models");
+var config = args.Length > 2 ? args[2] : "v5japan";
 
 CopyModel(OnlineDetectionModel.ChineseV4.DownloadAsync().GetAwaiter().GetResult().DirectoryPath,
     Path.Combine(models, "det"));
 CopyModel(OnlineClassificationModel.ChineseMobileV2.DownloadAsync().GetAwaiter().GetResult().DirectoryPath,
     Path.Combine(models, "cls"));
 
-WriteRecognitionModel(LocalDictOnlineRecognizationModel.ChineseV4, Path.Combine(models, "rec-multi"));
-WriteRecognitionModel(LocalDictOnlineRecognizationModel.JapanV4, Path.Combine(models, "rec-japan"));
+OcrModelSet set;
+switch (config)
+{
+    case "v4dual":
+        WriteRecognitionModel(LocalDictOnlineRecognizationModel.ChineseV4,
+            Path.Combine(models, "rec-multi"));
+        WriteRecognitionModel(LocalDictOnlineRecognizationModel.JapanV4,
+            Path.Combine(models, "rec-japan"));
+        set = new OcrModelSet
+        {
+            PrimaryName = "ch_PP-OCRv4_rec", PrimaryVersion = 4,
+            SecondaryName = "japan_PP-OCRv4_rec", SecondaryVersion = 4,
+            Runtime = "Paddle Inference 3.3.1",
+        };
+        break;
+
+    case "v5only":
+        WriteFullRecognitionModel(OnlineFullModels.ChineseV5, Path.Combine(models, "rec-multi"));
+        WriteFullRecognitionModel(OnlineFullModels.ChineseV5, Path.Combine(models, "rec-japan"));
+        set = new OcrModelSet
+        {
+            PrimaryName = "PP-OCRv5_mobile_rec", PrimaryVersion = 5,
+            SecondaryName = "PP-OCRv5_mobile_rec", SecondaryVersion = 5,
+            Runtime = "Paddle Inference 3.3.1",
+        };
+        break;
+
+    case "v5japan":
+    default:
+        WriteFullRecognitionModel(OnlineFullModels.ChineseV5, Path.Combine(models, "rec-multi"));
+        WriteRecognitionModel(LocalDictOnlineRecognizationModel.JapanV4,
+            Path.Combine(models, "rec-japan"));
+        set = new OcrModelSet
+        {
+            PrimaryName = "PP-OCRv5_mobile_rec", PrimaryVersion = 5,
+            SecondaryName = "japan_PP-OCRv4_rec", SecondaryVersion = 4,
+            Runtime = "Paddle Inference 3.3.1",
+        };
+        break;
+}
+
+File.WriteAllText(Path.Combine(models, "models.json"), set.ToJson());
+Console.WriteLine($"model set: {config} ({set.PrimaryName} + {set.SecondaryName})");
 
 // 3. VC++ ランタイムを同梱する(利用者に別途インストールを求めない)。
 //    実測で、この 3 つを必要とするのは ONNX 系の DLL だけ。
@@ -78,6 +129,7 @@ File.WriteAllText(
     Offline OCR Pack — 同梱物のライセンス
 
     Paddle Inference (native runtime) ........ Apache-2.0
+      paddle_inference_c.dll / common.dll / phi.dll
       https://github.com/PaddlePaddle/Paddle
 
     PaddleOCR models .......................... Apache-2.0
@@ -110,6 +162,10 @@ File.WriteAllText(
 
     SkiaSharp (+ Skia) ........................ MIT / BSD-3-Clause
       https://github.com/mono/SkiaSharp
+
+    YamlDotNet ................................ MIT
+      Sdcb.PaddleOCR 3.x がモデルの設定を読むのに使う。
+      https://github.com/aaubry/YamlDotNet
 
     いずれも商用配布物への同梱が認められている条件です。
     Intel MKL は使っていません(再配布条件に曖昧さが残るため)。
@@ -205,6 +261,43 @@ static void CopyVisualCppRuntime(string target)
     }
 }
 
+// PP-OCRv5 は OnlineFullModels からしか取れない。辞書の書き出し方は同じ。
+static void WriteFullRecognitionModel(OnlineFullModels online, string to)
+{
+    var full = online.DownloadAsync().GetAwaiter().GetResult();
+    var rec = full.RecognizationModel;
+    var root = FindModelRoot(rec);
+    CopyModel(root, to);
+    WriteDictionary(rec, to);
+}
+
+static string FindModelRoot(object model)
+{
+    // FileRecognizationModel は元のフォルダーを持っている。名前は版で変わりうるので探す。
+    foreach (var name in new[] { "DirectoryPath", "RootDirectory", "ModelDir" })
+    {
+        var property = model.GetType().GetProperty(name);
+        if (property?.GetValue(model) is string path && Directory.Exists(path))
+        {
+            return path;
+        }
+    }
+
+    foreach (var field in model.GetType()
+        .GetFields(System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.NonPublic
+            | System.Reflection.BindingFlags.Public))
+    {
+        if (field.GetValue(model) is string path && Directory.Exists(path))
+        {
+            return path;
+        }
+    }
+
+    throw new InvalidOperationException(
+        $"{model.GetType().Name} からモデルのフォルダーを取り出せませんでした。");
+}
+
 static void CopyModel(string from, string to)
 {
     Directory.CreateDirectory(to);
@@ -232,13 +325,24 @@ static void WriteRecognitionModel(LocalDictOnlineRecognizationModel online, stri
     var model = online.DownloadAsync().GetAwaiter().GetResult();
     CopyModel(online.RootDirectory, to);
 
+    WriteDictionary(model, to);
+}
+
+// 認識モデルは辞書をファイルとして持っていない(パッケージの中にある)。
+// Pack では実ファイルにしたいので、1 行ずつ取り出して書き出す。
+static void WriteDictionary(object model, string to)
+{
+    var method = model.GetType().GetMethod("GetLabelByIndex", [typeof(int)])
+        ?? throw new InvalidOperationException(
+            $"{model.GetType().Name} に GetLabelByIndex がありません。");
+
     var labels = new List<string>();
     for (var index = 1; ; index++)
     {
         string label;
         try
         {
-            label = model.GetLabelByIndex(index);
+            label = (string)method.Invoke(model, [index])!;
         }
         catch
         {

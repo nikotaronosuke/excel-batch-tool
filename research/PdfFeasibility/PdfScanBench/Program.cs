@@ -104,15 +104,40 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
     int total = 0, exact = 0, autoAccepted = 0, falseAuto = 0, rowsOk = 0;
     var falseCases = new List<string>();
 
+    // 行がまるごとずれているだけなのか、中身が壊れているのかを分ける。
+    // ずれているだけなら出力の行番号が 1 つずれるだけで、値は失われていない。
+    var offsets = new List<int>();
+    var gotRowCounts = new List<int>();
+
     foreach (var page in pageList)
     {
         var truth = Fixtures.TableTruth(page, rows);
         var cells = reading.Items.Where(item => item.PageNumber == page).ToList();
         var gotRows = cells.Count == 0 ? 0 : cells.Max(item => item.Row!.Value) + 1;
+        gotRowCounts.Add(gotRows);
         if (gotRows == truth.Count)
         {
             rowsOk++;
         }
+
+        // GT の行が、読み取りの何行目に入っているかを調べる。
+        var best = 0; var bestHits = -1;
+        for (var shift = -3; shift <= 3; shift++)
+        {
+            var hits = 0;
+            for (var r = 0; r < truth.Count; r++)
+            {
+                for (var c = 0; c < 4; c++)
+                {
+                    var cell = cells.FirstOrDefault(i => i.Row == r + shift && i.Column == c);
+                    if (cell is not null && Strip(cell.Text) == Strip(truth[r][c])) { hits++; }
+                }
+            }
+
+            if (hits > bestHits) { bestHits = hits; best = shift; }
+        }
+
+        offsets.Add(best);
 
         for (var r = 0; r < truth.Count; r++)
         {
@@ -158,7 +183,21 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
             Console.WriteLine($"  -- probe p1: skew={pr.SkewDegrees:F2} reliable={pr.SkewReliable} "
                 + $"h={pr.HorizontalRulings} v={pr.VerticalRulings} under={pr.UnderlineCount} "
                 + $"deskew={DeskewPolicy.ShouldDeskew(pr.SkewDegrees, pr.SkewReliable)}");
+            foreach (var test in new[] { 0.0, -pr.SkewDegrees, pr.SkewDegrees })
+            {
+                var probe = probeSource.Read(1, test, CancellationToken.None);
+                Console.WriteLine($"  -- rotate {test,6:F2}: rows={probe.RowRulings.Count} "
+                    + $"cols={probe.ColumnRulings.Count} lines={probe.Lines.Count}");
+            }
+
             var page1 = probeSource.Read(1, 0, CancellationToken.None);
+            Console.WriteLine($"  -- rowY=[{string.Join(", ", page1.RowRulings.Select(v => v.ToString("F0")))}]");
+            var tail = page1.Lines.Where(l => l.Box.CenterX < 260).OrderBy(l => l.Box.CenterY).TakeLast(6);
+            foreach (var l in tail)
+            {
+                Console.WriteLine($"     line y={l.Box.Y:F0}..{l.Box.Bottom:F0} cy={l.Box.CenterY:F0} "
+                    + $"[{OcrFusion.Fuse(l).Text}]");
+            }
             Console.WriteLine($"  -- rulings p1: rows={page1.RowRulings.Count} "
                 + $"cols={page1.ColumnRulings.Count} "
                 + $"colX=[{string.Join(", ", page1.ColumnRulings.Select(v => v.ToString("F0")))}]");
@@ -182,6 +221,15 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
         $"{label,-16} セル {exact,5}/{total,-5} = {(double)exact / total,6:P1}  "
         + $"行数一致 {rowsOk}/{pages}  自動確定 {(double)autoAccepted / total,5:P0}  "
         + $"誤確定 {falseAuto}  {timer.Elapsed.TotalSeconds / pages,5:F2} s/page");
+
+    var shifted = offsets.Count(o => o != 0);
+    if (shifted > 0)
+    {
+        Console.WriteLine($"        ※ 行がずれたページ {shifted}/{pages}  "
+            + $"ずれ幅 [{string.Join(", ", offsets.Distinct().OrderBy(o => o))}]  "
+            + $"読み取れた行数 [{string.Join(", ", gotRowCounts.Distinct().OrderBy(v => v))}]"
+            + $"(期待 {Fixtures.TableTruth(1, rows).Count})");
+    }
 
     foreach (var line in falseCases)
     {
@@ -266,6 +314,15 @@ void MeasureMarks(string label, bool degraded, double tilt)
     const int pages = 30;
     var pdf = Path.Combine(work, $"mark-{label.GetHashCode():X8}.pdf");
     Fixtures.Marks(pdf, pages, out var truth, degraded, tilt);
+
+    if (Environment.GetEnvironmentVariable("DUMP") == "1")
+    {
+        using var ps = engine.Open(pdf);
+        var pr = ps.Probe(1, CancellationToken.None);
+        Console.WriteLine($"  -- mark probe p1: skew={pr.SkewDegrees:F2} "
+            + $"reliable={pr.SkewReliable} deskew="
+            + $"{DeskewPolicy.ShouldDeskew(pr.SkewDegrees, pr.SkewReliable)}");
+    }
 
     var template = new FormTemplate
     {
