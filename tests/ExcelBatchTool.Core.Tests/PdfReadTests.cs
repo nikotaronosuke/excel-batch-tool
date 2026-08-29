@@ -225,7 +225,10 @@ public sealed class PdfReadTests
         Assert.False(preview.CanExecute);
         Assert.Contains(preview.Blocks, issue =>
             issue.Message.Contains("2 ページ") && issue.Message.Contains("OCR"));
-        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("一部のページだけ"));
+
+        // Phase 2F-B1 で OCR に対応したので、止める理由は「OCR Pack が無い」になった。
+        // 一部のページだけを取り出したファイルを作らないことは変えていない。
+        Assert.Contains(preview.Blocks, issue => issue.Message.Contains("Offline OCR Pack"));
 
         // 実行しても何も作らない。
         Assert.False(new PdfReader().Execute(preview).Success);
@@ -369,9 +372,10 @@ public sealed class PdfReadTests
         Assert.True(result.Success, result.Message);
 
         using var document = SpreadsheetDocument.Open(dir.File("コード_PDF抽出.xlsx"), false);
-        var cells = document.WorkbookPart!.WorksheetParts.First().Worksheet
+        var worksheet = FirstWorksheet(document);
+        var cells = worksheet
             .Descendants<Cell>()
-            .Where(cell => cell.CellReference!.Value!.EndsWith('2'))
+            .Where(cell => (cell.CellReference?.Value ?? string.Empty).EndsWith('2'))
             .ToList();
 
         // 先頭 0・記号入りは文字のまま。純粋な数値だけ数値にする。
@@ -604,13 +608,17 @@ public sealed class PdfReadTests
         return (preview, new PdfReader().Execute(preview));
     }
 
+    private static Worksheet FirstWorksheet(SpreadsheetDocument document)
+        => document.WorkbookPart?.WorksheetParts.FirstOrDefault()?.Worksheet
+            ?? throw new InvalidOperationException("Worksheet が見つかりません。");
+
     private static List<List<string>> ReadXlsx(string path)
     {
         using var document = SpreadsheetDocument.Open(path, isEditable: false);
-        var worksheetPart = document.WorkbookPart!.WorksheetParts.First();
+        var worksheet = FirstWorksheet(document);
 
         var rows = new List<List<string>>();
-        foreach (var row in worksheetPart.Worksheet.Descendants<Row>())
+        foreach (var row in worksheet.Descendants<Row>())
         {
             var values = new List<string>();
             foreach (var cell in row.Elements<Cell>())

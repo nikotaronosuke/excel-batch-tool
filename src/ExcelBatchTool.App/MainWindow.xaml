@@ -2326,6 +2326,30 @@
                                 </StackPanel>
                             </Border>
 
+                            <!-- スキャン PDF: OCR で読み取る導線 -->
+                            <Border Background="#FFF8E8" BorderBrush="#E8D8A8" BorderThickness="1"
+                                    CornerRadius="4" Padding="10,8" Margin="0,10,0,0"
+                                    Visibility="{Binding NeedsOcr, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="スキャンされたページの読み取り" FontSize="12"
+                                               FontWeight="SemiBold" Foreground="#3B4252" />
+                                    <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#5B6472"
+                                               Margin="0,4,0,0"
+                                               Text="画像のページは OCR で読み取ります。読み取った内容は必ず確認してから出力します。" />
+                                    <TextBlock Text="{Binding OcrPackText}" TextWrapping="Wrap"
+                                               FontSize="11" Foreground="#8A8F98" Margin="0,4,0,0" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="OCR で読み取る" Padding="10,4" FontSize="12"
+                                                Command="{Binding RunOcrCommand}" />
+                                        <Button Content="中止" Padding="10,4" FontSize="12" Margin="8,0,0,0"
+                                                Command="{Binding CancelOcrCommand}" />
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ProgressText}" FontSize="11"
+                                               Foreground="#3B4252" Margin="0,6,0,0"
+                                               Visibility="{Binding HasProgress, Converter={StaticResource BoolToVis}}" />
+                                </StackPanel>
+                            </Border>
+
                             <ItemsControl ItemsSource="{Binding Issues}" Margin="0,10,0,0"
                                           Visibility="{Binding HasIssues, Converter={StaticResource BoolToVis}}">
                                 <ItemsControl.ItemTemplate>
@@ -2384,6 +2408,73 @@
                                 </TextBlock>
                             </StackPanel>
                         </Border>
+
+                        <!-- OCR の確認・修正(スキャンを読み取ったときだけ出す) -->
+                        <Grid DockPanel.Dock="Top" Margin="12,0,12,8"
+                              Visibility="{Binding HasReading, Converter={StaticResource BoolToVis}}">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="160" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Text="{Binding ReviewSummaryText}" FontSize="11"
+                                       Foreground="#3B4252" TextWrapping="Wrap" />
+
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,6,0,6">
+                                <CheckBox Content="要確認だけ表示" FontSize="11"
+                                          VerticalAlignment="Center"
+                                          IsChecked="{Binding ShowOnlyNeedsReview, Mode=TwoWay}" />
+                                <Button Content="この行を確認済みにする" Padding="8,3" FontSize="11"
+                                        Margin="12,0,0,0"
+                                        Command="{Binding ConfirmSelectedCommand}" />
+                                <Button Content="表示中をすべて確認済みにする" Padding="8,3" FontSize="11"
+                                        Margin="8,0,0,0"
+                                        Command="{Binding ConfirmAllShownCommand}" />
+                            </StackPanel>
+
+                            <DataGrid Grid.Row="2" ItemsSource="{Binding ReviewItems}"
+                                      SelectedItem="{Binding SelectedItem, Mode=TwoWay}"
+                                      AutoGenerateColumns="False" CanUserAddRows="False"
+                                      CanUserDeleteRows="False" CanUserResizeRows="False"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                      HorizontalGridLinesBrush="#E9EBEF" BorderBrush="#D8DCE3"
+                                      Background="White" RowBackground="White" RowHeight="24"
+                                      FontSize="11" SelectionMode="Single"
+                                      EnableRowVirtualization="True"
+                                      VirtualizingPanel.IsVirtualizing="True"
+                                      VirtualizingPanel.VirtualizationMode="Recycling"
+                                      ScrollViewer.CanContentScroll="True">
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="DataGridRow">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding NeedsAttention}" Value="True">
+                                                <Setter Property="Background" Value="#FFF6F5" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="ページ / 行" Width="72" IsReadOnly="True"
+                                                        Binding="{Binding PositionText}" />
+                                    <DataGridTextColumn Header="読み取った内容" Width="*" IsReadOnly="True"
+                                                        Binding="{Binding OriginalText}" />
+                                    <DataGridTextColumn Header="自信" Width="46" IsReadOnly="True"
+                                                        Binding="{Binding ConfidenceText}" />
+                                    <DataGridTextColumn Header="状態" Width="64" IsReadOnly="True"
+                                                        Binding="{Binding StatusText}" />
+                                    <DataGridTextColumn Header="修正値" Width="*"
+                                                        Binding="{Binding EditedText, Mode=TwoWay,
+                                                            UpdateSourceTrigger=PropertyChanged}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <TextBlock Grid.Row="3" Text="{Binding SelectedEngineText}" FontSize="11"
+                                       Foreground="#8A8F98" TextWrapping="Wrap" Margin="0,6,0,0"
+                                       Visibility="{Binding HasSelectedItem, Converter={StaticResource BoolToVis}}" />
+                        </Grid>
 
                         <DataGrid ItemsSource="{Binding PreviewRows}" Margin="12,0,12,10"
                                   AutoGenerateColumns="False" CanUserAddRows="False"

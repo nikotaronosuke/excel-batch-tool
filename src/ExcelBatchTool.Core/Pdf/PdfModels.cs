@@ -30,6 +30,37 @@ public enum PdfOutputFormat
     Csv,
 }
 
+/// <summary>いま何ができる状態か。</summary>
+public enum PdfReadStage
+{
+    /// <summary>そのまま出力できる(文字情報だけ、または OCR の確認が終わった)。</summary>
+    Ready = 0,
+
+    /// <summary>スキャンされたページがあるので、先に OCR で読み取る必要がある。</summary>
+    NeedsOcr,
+
+    /// <summary>この段階では扱えない。</summary>
+    Blocked,
+}
+
+/// <summary>ページ 1 枚をどう処理するか。document 全体で 1 種類と決めつけない。</summary>
+public enum PdfPageRoute
+{
+    /// <summary>文字情報のある文章ページ。PdfPig で読む。</summary>
+    BornDigitalText = 0,
+
+    /// <summary>文字情報のある表ページ。PdfPig + 罫線で読む。</summary>
+    BornDigitalTable,
+
+    /// <summary>画像だけのページ。OCR が必要。</summary>
+    Scan,
+
+    /// <summary>判定できないページ。</summary>
+    Unknown,
+}
+
+public sealed record PdfPagePlan(int Page, PdfPageRoute Route);
+
 /// <summary>PDF 読み取り 1 回分の指定。ViewModel に直書きせず、将来レシピ化できる形に分けておく。</summary>
 public sealed record PdfReadRequest
 {
@@ -114,16 +145,24 @@ public sealed class PdfReadPreview
 
     public bool HasBlocks => BlockCount > 0;
 
-    /// <summary>出力する行数(文字 PDF は行、表 PDF はヘッダー込みの行)。</summary>
-    public int OutputRowCount => Kind switch
-    {
-        PdfDocumentKind.Text => Lines.Count,
-        PdfDocumentKind.Table => TableRows.Count,
-        _ => 0,
-    };
+    /// <summary>いま何ができる状態か。</summary>
+    public PdfReadStage Stage { get; init; } = PdfReadStage.Blocked;
 
-    public bool CanExecute => !HasBlocks
-        && Kind is PdfDocumentKind.Text or PdfDocumentKind.Table
+    /// <summary>ページごとの処理の振り分け。document 全体で 1 種類と決めつけない。</summary>
+    public IReadOnlyList<PdfPagePlan> PagePlans { get; init; } = [];
+
+    /// <summary>OCR が必要なページ番号。</summary>
+    public IReadOnlyList<int> OcrPageNumbers
+        => PagePlans.Where(plan => plan.Route == PdfPageRoute.Scan).Select(plan => plan.Page).ToList();
+
+    /// <summary>OCR の確認結果(OCR を通した場合だけ入る)。</summary>
+    public Ocr.OcrDocumentReading? OcrReading { get; init; }
+
+    /// <summary>出力する行数(文字 PDF は行、表 PDF はヘッダー込みの行)。</summary>
+    public int OutputRowCount => Kind == PdfDocumentKind.Table ? TableRows.Count : Lines.Count;
+
+    public bool CanExecute => Stage == PdfReadStage.Ready
+        && !HasBlocks
         && OutputRowCount > 0;
 }
 

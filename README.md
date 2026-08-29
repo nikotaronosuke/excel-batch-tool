@@ -257,16 +257,37 @@ CSV 同士の結合、Web へのアップロード。
 - 作ったあと読み直して、行数・列数・各項目が指定どおりかを確かめてから確定します
 - 何をどう取り出したかは控えファイルに残ります(この PC の中だけ)
 
-**スキャンした PDF(画像だけの PDF)はまだ読み取れません。**
-選んだ場合は「OCR が必要です」と表示して止まります。文字のページと画像のページが
-混ざった PDF も、一部だけを取り出したファイルは作らずに止まります。
-
 これは **PDF の見た目を Excel で再現する機能ではありません。**
 PDF に含まれるデータを、Excel で扱える表の形にするための機能です。
 
-**次の機能はまだありません。** スキャン PDF の読み取り(OCR)、手書き、
-チェックボックスの判定、傾きの補正、同じ帳票を大量に処理する設定、
-読み取り結果の画面上での修正。
+#### スキャンした PDF(OCR)
+
+**Offline OCR Pack** を一緒に置くと、スキャンされたページも読み取れます。
+完全にオフラインで動き、通信・追加インストール・Python などは要りません。
+
+- 画像のページだけを OCR にかけます。**文字情報のあるページは OCR を通しません**
+  (元から正しい文字を画像にし直して精度を落とさないため)
+- 2 つの認識モデル(数字・英字が得意なものと、かな漢字が得意なもの)で
+  同じ場所を読み、結果を突き合わせます。片方だけでは、
+  かな漢字か英数字コードのどちらかが必ず崩れることを実測しています
+- 結果は **自動確定 / 要確認 / 読取不能** の 3 つに分かれます。
+  2 つのモデルが一致し、かつ十分な自信があるものだけを自動確定にします
+- **確認が済んでいない項目が 1 件でも残っていると出力できません。**
+  「修正して確認」と「元の読み取りのままで正しいと確認」の両方ができます。
+  一覧を開いただけでは確認済みになりません
+- 一覧は「要確認だけ表示」に絞れます。100 ページを超える PDF でも、
+  全部を 1 件ずつ見る必要はありません
+- 読み取りは中止できます。中止しても元の PDF は変わらず、ファイルも作りません
+- 控えには件数(自動確定・要確認・読取不能・人が修正した数)だけを残します。
+  **読み取った文字そのものは控えに残しません**
+
+**OCR Pack が無くても本体は普通に起動し、文字情報のある PDF はそのまま読めます。**
+スキャンされた PDF を選んだときだけ「OCR Pack がありません」と表示します。
+
+**次の段階でまだ対応していないもの。** 傾いたページの補正、
+スキャンされた表を表として読むこと、同じ帳票を大量に処理する設定、
+チェックボックスの判定、手書き。
+傾いたページと表らしいスキャンは、無理に文章として出力せず理由を表示して止まります。
 
 ### よく使う設定を保存する(処理設定)
 
@@ -344,6 +365,28 @@ dotnet publish src/ExcelBatchTool.App -c Release -p:PublishProfile=win-x64-self-
 出力: `src/ExcelBatchTool.App/bin/Release/net8.0-windows/win-x64/publish/`
 (この中の `ExcelBatchTool.App.exe` を起動)
 
+## Offline OCR Pack のビルド
+
+スキャン PDF を読むための Pack は**本体とは別**に作ります。
+本体の配布サイズには含まれません。
+
+```
+dotnet publish src/ExcelBatchTool.Ocr -c Release -r win-x64 --self-contained false -o <publish-dir>
+dotnet run --project tools/OcrPackBuilder -c Release -- <publish-dir> <publish>/ocr
+```
+
+`OcrPackBuilder` は組み立てのときだけモデルを取得し、Pack の中に
+
+- 認識・検出・向き判定のモデルと辞書
+- 推論ランタイムと VC++ ランタイム(app-local)
+- ライセンス表示(`LICENSES.txt`)
+- 目録(`pack.json`。ファイルごとのサイズと SHA-256)
+
+を入れます。**出来上がった Pack は自己完結していて、
+実行時に通信も追加インストールもしません。**
+本体は起動時に `ocr` フォルダーを探し、目録どおりに揃っているかを確かめてから使います。
+欠けていたり中身が違っていたりすれば、native の読み込みに入る前に理由を表示して止めます。
+
 ## 構成
 
 ```
@@ -352,10 +395,18 @@ src/ExcelBatchTool.Core/Merge       … 表の縦結合(検証・ストリーミ
 src/ExcelBatchTool.Core/Aggregation … シートの集約(検証・書式の移植・出力検証)
 src/ExcelBatchTool.Core/CsvTransform … CSV への変換(流し読み・書き出し・出力検証)
 src/ExcelBatchTool.Core/Pdf         … PDF の読み取り(判定・文字/表の抽出・出力検証)
+src/ExcelBatchTool.Core/Ocr         … OCR の統合規則・確認の状態・Pack の検査
+                                       (OCR ランタイムそのものは持たない)
 src/ExcelBatchTool.Core/Recipes     … 処理設定の保存(この PC の中だけ)
 src/ExcelBatchTool.App    … WPF デスクトップアプリ
+src/ExcelBatchTool.Ocr    … Offline OCR Pack の中身(本体からは参照しない)
+tools/OcrPackBuilder      … Offline OCR Pack を組み立てる配布用ツール
 tests/                    … テスト(架空データで生成した Workbook を使用)
 ```
+
+本体は `ExcelBatchTool.Ocr` を参照しません。OCR の実体は Pack のフォルダーから
+実行時に読み込みます。この分け方のおかげで、Pack が無くても本体は普通に起動し、
+本体の配布サイズに OCR ランタイムが乗りません。
 
 テストでは、解析・プレビュー・統合の前後でファイルの SHA-256 ハッシュ・サイズ・
 最終更新日時を比較し、**入力ファイルを一切変更しないこと**を自動検証しています。
@@ -371,3 +422,18 @@ MIT License([LICENSE](LICENSE) を参照)
 - [DocumentFormat.OpenXml](https://www.nuget.org/packages/DocumentFormat.OpenXml)(MIT)
 - [PdfPig](https://www.nuget.org/packages/PdfPig)(Apache-2.0)
 - [Tabula](https://www.nuget.org/packages/Tabula)(MIT)
+
+Offline OCR Pack(別配布。本体には含まれません):
+
+- [Sdcb.PaddleOCR / Sdcb.PaddleInference](https://github.com/sdcb/PaddleSharp)(Apache-2.0)
+- PaddleOCR モデル ch_PP-OCRv4 / japan_PP-OCRv4(Apache-2.0)
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime)(MIT)
+- [Paddle2ONNX](https://github.com/PaddlePaddle/Paddle2ONNX)(Apache-2.0)
+- [OpenBLAS](https://github.com/OpenMathLib/OpenBLAS)(BSD-3-Clause)
+- [OpenCvSharp](https://github.com/shimat/opencvsharp)(Apache-2.0)
+- [PDFtoImage](https://github.com/sungaila/PDFtoImage)(MIT)/ PDFium(BSD-3-Clause)
+- [SkiaSharp](https://github.com/mono/SkiaSharp)(MIT)
+- Microsoft Visual C++ ランタイム(再頒布可能コード。app-local で同梱)
+
+Intel MKL は使っていません(再配布条件に曖昧さが残るため)。
+Pack の中身の一覧とライセンスは `ocr/LICENSES.txt` にあります。

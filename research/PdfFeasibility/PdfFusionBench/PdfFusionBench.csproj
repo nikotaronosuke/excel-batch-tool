@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase 2F-B1: 二重読み(多言語 rec + 日本語専用 rec)の統合方式を、
+    Ground Truth との完全一致率で選ぶためのベンチマーク。製品本体からは参照しない。
+
+    Paddle Inference 2.x runtime に固定する。日本語専用 rec(japan_PP-OCRv4)は
+    旧形式モデルで、3.x runtime では device を問わず実行できないことを再実測した
+    (Paddle status code 2)。したがって「1 プロセス = 1 runtime 版」であり、
+    二重読みを 1 プロセスで成立させられるのは 2.x 側だけになる。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <NoWarn>CA1416;CS0618</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <PackageReference Include="Sdcb.PaddleInference" Version="2.5.0.1" />
+    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.mkl" Version="2.6.1" />
+    <PackageReference Include="Sdcb.PaddleOCR" Version="2.7.0.3" />
+    <PackageReference Include="Sdcb.PaddleOCR.Models.Online" Version="2.7.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 指標と GT の形は第 1 スタックと共有し、2F-R の数値と比較できるようにする。 -->
+    <Compile Include="..\PdfBench\Layouts.cs" Link="Shared\Layouts.cs" />
+    <Compile Include="..\PdfBench\TextMetrics.cs" Link="Shared\TextMetrics.cs" />
+  </ItemGroup>
+
+</Project>
