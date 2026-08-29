@@ -44,6 +44,11 @@ public sealed class PdfReadViewModel : ObservableObject
     private bool _lastRunSucceeded;
 
     private OcrPackStatus? _packStatus;
+
+    /// <summary>OCR を始められる状態のプレビュー。読み取り直しのために残しておく。</summary>
+    private PdfReadPreview? _scanPreview;
+    private OcrReadMode _readMode = OcrReadMode.Auto;
+    private FormTemplate? _template;
     private OcrDocumentReading? _reading;
     private OcrReviewSession? _session;
     private CancellationTokenSource? _ocrCancellation;
@@ -272,13 +277,17 @@ public sealed class PdfReadViewModel : ObservableObject
 
     public bool CanExecute => !IsBusy && HasPreview && _preview!.CanExecute;
 
+    /// <summary>
+    /// 読み取りを始められるか。一度読み取ったあとでも押せる
+    /// (帳票の項目を直してから読み取り直す、という流れがあるため)。
+    /// </summary>
     public bool CanRunOcr => !IsBusy
-        && HasPreview
-        && _preview!.Stage == PdfReadStage.NeedsOcr
+        && !IsPreviewStale
+        && _scanPreview is not null
         && _packStatus is { IsUsable: true };
 
     /// <summary>OCR が必要な PDF か(画面の確認欄を出すかどうか)。</summary>
-    public bool NeedsOcr => _preview?.Stage == PdfReadStage.NeedsOcr;
+    public bool NeedsOcr => _scanPreview is not null;
 
     public bool HasReading => _reading is not null;
 
@@ -642,6 +651,7 @@ public sealed class PdfReadViewModel : ObservableObject
         try
         {
             ResetReview();
+            _scanPreview = null;
 
             // OCR Pack は「スキャンページがあったときだけ」必要になる。
             // 無くてもここで失敗させない(文字情報のある PDF はそのまま読める)。
@@ -649,6 +659,7 @@ public sealed class PdfReadViewModel : ObservableObject
             var pack = _packStatus;
 
             _preview = await Task.Run(() => _planner.CreatePreview(request, pack));
+            _scanPreview = _preview.Stage == PdfReadStage.NeedsOcr ? _preview : null;
             IsPreviewStale = false;
             FillPreviewRows();
 
@@ -693,8 +704,7 @@ public sealed class PdfReadViewModel : ObservableObject
     /// <summary>スキャンされたページを OCR で読み取る。数分かかるので中止できる。</summary>
     public async Task RunOcrAsync()
     {
-        if (_preview is not { Stage: PdfReadStage.NeedsOcr } preview
-            || _packStatus is not { IsUsable: true } pack)
+        if (_scanPreview is not { } preview || _packStatus is not { IsUsable: true } pack)
         {
             return;
         }
@@ -720,7 +730,8 @@ public sealed class PdfReadViewModel : ObservableObject
                 {
                     var engine = _loadEngine(pack);
                     var pageSource = engine.Open(source);
-                    var reading = _scanReader.Read(pageSource, engine.Info, pages, progress, token);
+                    var reading = _scanReader.Read(
+                        pageSource, engine.Info, pages, BuildReadOptions(), progress, token);
                     return (engine, pageSource, reading);
                 },
                 token);
@@ -736,6 +747,13 @@ public sealed class PdfReadViewModel : ObservableObject
 
             _reading = reading;
             _session = new OcrReviewSession(reading);
+
+            // 帳票として読む指定なのに項目がまだ決まっていなければ、
+            // 1 ページ目の読み取りから候補を作る(利用者は名前を直すだけでよい)。
+            if (IsFixedForm && TemplateFields.Count == 0)
+            {
+                SuggestTemplateFrom(reading);
+            }
 
             // まずページ全体が入る大きさにしておく。このあと項目を選ぶと、
             // その読み取り位置が読める大きさまで自動で寄る。
@@ -778,6 +796,145 @@ public sealed class PdfReadViewModel : ObservableObject
     }
 
     private void CancelOcr() => _ocrCancellation?.Cancel();
+
+    // ── 同じ様式の帳票としてまとめて読む ────────────────
+
+    private const string ModeAuto = "自動で判断する";
+    private const string ModeLines = "文章として読む";
+    private const string ModeTable = "表として読む";
+    private const string ModeForm = "同じ様式の帳票として読む";
+
+    public static IReadOnlyList<string> ReadModeOptions { get; }
+        = [ModeAuto, ModeLines, ModeTable, ModeForm];
+
+    public string ReadModeDisplay
+    {
+        get => _readMode switch
+        {
+            OcrReadMode.Lines => ModeLines,
+            OcrReadMode.Table => ModeTable,
+            OcrReadMode.FixedForm => ModeForm,
+            _ => ModeAuto,
+        };
+        set
+        {
+            var mode = value switch
+            {
+                ModeLines => OcrReadMode.Lines,
+                ModeTable => OcrReadMode.Table,
+                ModeForm => OcrReadMode.FixedForm,
+                _ => OcrReadMode.Auto,
+            };
+
+            if (_readMode == mode)
+            {
+                return;
+            }
+
+            _readMode = mode;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsFixedForm));
+            OnSettingsChanged();
+        }
+    }
+
+    public bool IsFixedForm => _readMode == OcrReadMode.FixedForm;
+
+    /// <summary>帳票として読むときの項目一覧(画面で編集する)。</summary>
+    public ObservableCollection<FormFieldRow> TemplateFields { get; } = [];
+
+    public string TemplateSummaryText => TemplateFields.Count == 0
+        ? "読み取る項目をまだ決めていません。"
+        : $"{TemplateFields.Count:N0} 項目を 1 ページ 1 件として読み取ります。";
+
+    /// <summary>
+    /// 1 ページ目の読み取り結果から、項目の候補を作る。
+    /// 「ラベル: 値」の形になっている行を拾って、値の場所を読み取り領域にする。
+    /// 利用者は名前と要否を直すだけでよい。
+    /// </summary>
+    public void SuggestTemplateFrom(OcrDocumentReading reading)
+    {
+        TemplateFields.Clear();
+
+        var firstPage = reading.Items
+            .Where(item => item.PageNumber == reading.OcrPages.FirstOrDefault())
+            .OrderBy(item => item.LineNumber)
+            .ThenBy(item => item.IndexInLine)
+            .ToList();
+
+        foreach (var line in firstPage.GroupBy(item => item.LineNumber))
+        {
+            var parts = line.OrderBy(item => item.IndexInLine).ToList();
+
+            // 「項目名」と「値」が別々に読み取れている場合。
+            if (parts.Count >= 2)
+            {
+                var name = Label(parts[0].Text);
+                if (name.Length > 0)
+                {
+                    TemplateFields.Add(new FormFieldRow(name, parts[^1].BoundingBox)
+                    {
+                        LabelArea = parts[0].BoundingBox,
+                    });
+                }
+
+                continue;
+            }
+
+            // 「項目名: 値」が 1 つのまとまりとして読み取れている場合。
+            // 読み取り位置を文字数の比で分け、右側を値の場所として扱う。
+            var single = parts[0];
+            var colon = single.Text.IndexOfAny([':', '：']);
+            if (colon <= 0 || colon >= single.Text.Length - 1)
+            {
+                continue;
+            }
+
+            var label = Label(single.Text[..colon]);
+            if (label.Length == 0)
+            {
+                continue;
+            }
+
+            var box = single.BoundingBox;
+            var ratio = (colon + 1) / (double)single.Text.Length;
+            var split = box.X + (box.Width * ratio);
+
+            TemplateFields.Add(new FormFieldRow(
+                label,
+                new OcrBox(split, box.Y, box.Right - split, box.Height))
+            {
+                LabelArea = new OcrBox(box.X, box.Y, split - box.X, box.Height),
+            });
+        }
+
+        OnPropertyChanged(nameof(TemplateSummaryText));
+    }
+
+    /// <summary>項目名として使える形に整える(末尾のコロンや空白を落とす)。</summary>
+    private static string Label(string text) => text.Trim().TrimEnd(':', '：', ' ').Trim();
+
+    private OcrReadOptions BuildReadOptions()
+    {
+        if (_readMode != OcrReadMode.FixedForm)
+        {
+            return new OcrReadOptions { Mode = _readMode };
+        }
+
+        _template = new FormTemplate
+        {
+            Name = SourceFileNameDisplay,
+            Fields = [.. TemplateFields.Select(row => row.ToField())],
+
+            // 項目名そのものを位置合わせの手がかりにする。
+            // ページごとの多少のずれは、これで吸収できる。
+            Anchors = [.. TemplateFields
+                .Where(row => row.UseAsAnchor)
+                .Select(row => new FormAnchor(row.Name, row.LabelArea))],
+        };
+
+        return new OcrReadOptions { Mode = OcrReadMode.FixedForm, Template = _template };
+    }
 
     /// <summary>確認の状態を捨てて、開いていた PDF も閉じる。</summary>
     private void ResetReview()
@@ -995,6 +1152,8 @@ public sealed class PdfReadViewModel : ObservableObject
 
         // 設定が変われば読み取り直し。古い確認結果のまま作成させない。
         ResetReview();
+        _scanPreview = null;
+        OnPropertyChanged(nameof(TemplateSummaryText));
 
         RaiseCommandStates();
         RaiseReviewProperties();

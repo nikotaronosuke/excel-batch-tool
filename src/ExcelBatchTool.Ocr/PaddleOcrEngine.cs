@@ -63,6 +63,10 @@ public sealed class PaddleOcrEngine : IOcrEngine
         };
         _classifier = new PaddleOcrClassifier(
             new FileClassificationModel(Path.Combine(models, "cls"), ModelVersion.V2), Device);
+
+        // 向きの判定は既定のまま使う。効きを弱めると読み取りが落ちることを実測した
+        // (罫線表のセル一致 61.3% → 38.7%、罫線なし 87.9% → 64.3%)。
+        // 検出した枠は上下が逆のまま返ることが多く、この判定がそれを直している。
         _multi = new PaddleOcrRecognizer(
             new FileRecognizationModel(
                 Path.Combine(models, "rec-multi"),
@@ -104,28 +108,43 @@ public sealed class PaddleOcrEngine : IOcrEngine
             cancellationToken.ThrowIfCancellationRequested();
 
             using var mat = Render(pdf, pageNumber, ProbeDpi);
-            using var gray = new Mat();
-            Cv2.CvtColor(mat, gray, ColorConversionCodes.BGR2GRAY);
+            using var binary = PageImageOps.Binarize(mat);
+            using var forRulings = PageImageOps.BinarizeForRulings(mat);
 
-            using var binary = new Mat();
-            Cv2.Threshold(gray, binary, 0, 255, ThresholdTypes.BinaryInv | ThresholdTypes.Otsu);
+            var (degrees, reliable) = PageImageOps.Skew(binary);
+            var (rows, columns) = PageImageOps.Rulings(forRulings);
 
-            return new OcrPageProbe(
-                pageNumber,
-                Skew(binary),
-                CountRulings(binary, horizontal: true),
-                CountRulings(binary, horizontal: false));
+            return new OcrPageProbe(pageNumber, degrees, rows.Count, columns.Count)
+            {
+                SkewReliable = reliable,
+                UnderlineCount = PageImageOps.Underlines(forRulings),
+            };
         }
 
-        public IReadOnlyList<OcrRawLine> Read(int pageNumber, CancellationToken cancellationToken)
+        public OcrPageRead Read(
+            int pageNumber, double deskewDegrees, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            using var mat = Render(pdf, pageNumber, OcrDpi);
+            using var page = Render(pdf, pageNumber, OcrDpi);
+
+            // 傾きを直してから読む。直した画像の座標と、元へ戻す変換を一緒に返す。
+            var transform = DeskewTransform.None;
+            using var mat = deskewDegrees == 0
+                ? page.Clone()
+                : PageImageOps.Rotate(page, deskewDegrees, out transform);
+
+            using var binary = PageImageOps.BinarizeForRulings(mat);
+            var (rowRulings, columnRulings) = PageImageOps.Rulings(binary);
+
             var rects = engine._detector.Run(mat);
             if (rects.Length == 0)
             {
-                return [];
+                return new OcrPageRead(pageNumber, [], transform)
+                {
+                    RowRulings = rowRulings,
+                    ColumnRulings = columnRulings,
+                };
             }
 
             var crops = new List<Mat>(rects.Length);
@@ -164,7 +183,11 @@ public sealed class PaddleOcrEngine : IOcrEngine
                         OcrFusion.Finite(japan[index].Score)));
                 }
 
-                return lines;
+                return new OcrPageRead(pageNumber, lines, transform)
+                {
+                    RowRulings = rowRulings,
+                    ColumnRulings = columnRulings,
+                };
             }
             finally
             {
@@ -173,6 +196,29 @@ public sealed class PaddleOcrEngine : IOcrEngine
                     crop.Dispose();
                 }
             }
+        }
+
+        /// <summary>指定した場所の黒い画素の割合。1 回の描画でまとめて測る。</summary>
+        public IReadOnlyList<double> InkRatios(
+            int pageNumber,
+            IReadOnlyList<OcrBox> areas,
+            double deskewDegrees,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (areas.Count == 0)
+            {
+                return [];
+            }
+
+            using var page = Render(pdf, pageNumber, OcrDpi);
+            using var mat = deskewDegrees == 0
+                ? page.Clone()
+                : PageImageOps.Rotate(page, -deskewDegrees, out _);
+            using var gray = mat.CvtColor(ColorConversionCodes.BGR2GRAY);
+
+            return [.. areas.Select(area => PageImageOps.InkRatio(gray, area))];
         }
 
         public OcrPageImage RenderPage(int pageNumber, int dpi, CancellationToken cancellationToken)
@@ -202,90 +248,5 @@ public sealed class PaddleOcrEngine : IOcrEngine
             return Cv2.ImDecode(encoded.ToArray(), ImreadModes.Color);
         }
 
-        /// <summary>
-        /// 傾きの推定。文字を横につないで行の塊にし、その塊の傾きの中央値を取る。
-        /// 1 つの外れ値に引きずられないよう平均ではなく中央値を使う。
-        /// </summary>
-        private static double Skew(Mat binary)
-        {
-            using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, new Size(25, 3));
-            using var merged = new Mat();
-            Cv2.MorphologyEx(binary, merged, MorphTypes.Close, kernel);
-
-            Cv2.FindContours(
-                merged, out var contours, out _,
-                RetrievalModes.External, ContourApproximationModes.ApproxSimple);
-
-            var angles = new List<double>();
-            foreach (var contour in contours)
-            {
-                var rect = Cv2.MinAreaRect(contour);
-                var width = Math.Max(rect.Size.Width, rect.Size.Height);
-                var height = Math.Min(rect.Size.Width, rect.Size.Height);
-
-                // 明らかに行らしい塊(横に長い)だけを見る。
-                if (width < 60 || height < 3 || width < height * 4)
-                {
-                    continue;
-                }
-
-                var angle = rect.Angle;
-                if (rect.Size.Width < rect.Size.Height)
-                {
-                    angle += 90;
-                }
-
-                while (angle > 45)
-                {
-                    angle -= 90;
-                }
-
-                while (angle < -45)
-                {
-                    angle += 90;
-                }
-
-                angles.Add(angle);
-            }
-
-            if (angles.Count < 3)
-            {
-                return 0;
-            }
-
-            angles.Sort();
-            return angles[angles.Count / 2];
-        }
-
-        /// <summary>
-        /// 罫線の本数。長い直線だけを残す形の演算をしてから、
-        /// ページの 3 割以上にわたるものを 1 本と数える。
-        /// </summary>
-        private static int CountRulings(Mat binary, bool horizontal)
-        {
-            var length = Math.Max(
-                (horizontal ? binary.Width : binary.Height) / 3, 20);
-            var size = horizontal ? new Size(length, 1) : new Size(1, length);
-
-            using var kernel = Cv2.GetStructuringElement(MorphShapes.Rect, size);
-            using var lines = new Mat();
-            Cv2.MorphologyEx(binary, lines, MorphTypes.Open, kernel);
-
-            Cv2.FindContours(
-                lines, out var contours, out _,
-                RetrievalModes.External, ContourApproximationModes.ApproxSimple);
-
-            var count = 0;
-            foreach (var contour in contours)
-            {
-                var rect = Cv2.BoundingRect(contour);
-                if (horizontal ? rect.Width >= length : rect.Height >= length)
-                {
-                    count++;
-                }
-            }
-
-            return count;
-        }
     }
 }

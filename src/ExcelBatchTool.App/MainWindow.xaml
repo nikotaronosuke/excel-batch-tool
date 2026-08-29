@@ -2285,6 +2285,8 @@
                             </StackPanel>
                         </Border>
 
+                        <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Margin="12,0,12,10">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -2338,6 +2340,57 @@
                                                Text="画像のページは OCR で読み取ります。読み取った内容は必ず確認してから出力します。" />
                                     <TextBlock Text="{Binding OcrPackText}" TextWrapping="Wrap"
                                                FontSize="11" Foreground="#8A8F98" Margin="0,4,0,0" />
+                                    <Grid Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="読み取り方" FontSize="11"
+                                                   Foreground="#5B6472" VerticalAlignment="Center"
+                                                   Margin="0,0,6,0" />
+                                        <ComboBox Grid.Column="1" Height="24" FontSize="11"
+                                                  VerticalContentAlignment="Center"
+                                                  ItemsSource="{x:Static vm:PdfReadViewModel.ReadModeOptions}"
+                                                  SelectedItem="{Binding ReadModeDisplay, Mode=TwoWay}" />
+                                    </Grid>
+
+                                    <!-- 同じ様式の帳票として読むときの項目 -->
+                                    <Border Background="#FFFFFF" BorderBrush="#E2E5EA" BorderThickness="1"
+                                            CornerRadius="3" Padding="8,6" Margin="0,8,0,0"
+                                            Visibility="{Binding IsFixedForm, Converter={StaticResource BoolToVis}}">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding TemplateSummaryText}" FontSize="11"
+                                                       Foreground="#3B4252" TextWrapping="Wrap" />
+                                            <TextBlock TextWrapping="Wrap" FontSize="10" Foreground="#8A8F98"
+                                                       Margin="0,4,0,0"
+                                                       Text="1 ページ目を読み取ると、「項目名: 値」の形の行から候補を作ります。名前と種類を直してから、もう一度読み取ってください。" />
+                                            <DataGrid ItemsSource="{Binding TemplateFields}" Height="104"
+                                                      Margin="0,6,0,0"
+                                                      AutoGenerateColumns="False" CanUserAddRows="False"
+                                                      CanUserDeleteRows="True" CanUserResizeRows="False"
+                                                      CanUserSortColumns="False"
+                                                      HeadersVisibility="Column"
+                                                      GridLinesVisibility="Horizontal"
+                                                      HorizontalGridLinesBrush="#E9EBEF"
+                                                      BorderBrush="#D8DCE3" Background="White"
+                                                      RowBackground="White" RowHeight="22" FontSize="11">
+                                                <DataGrid.Columns>
+                                                    <DataGridTextColumn Header="項目名" Width="*"
+                                                                        Binding="{Binding Name, Mode=TwoWay,
+                                                                            UpdateSourceTrigger=PropertyChanged}" />
+                                                    <DataGridComboBoxColumn Header="種類" Width="96"
+                                                                            SelectedItemBinding="{Binding Kind, Mode=TwoWay}"
+                                                                            ItemsSource="{x:Static vm:FormFieldRow.KindOptions}" />
+                                                    <DataGridCheckBoxColumn Header="必須" Width="42"
+                                                                            Binding="{Binding IsRequired, Mode=TwoWay}" />
+                                                    <DataGridTextColumn Header="読み取る場所" Width="130"
+                                                                        IsReadOnly="True"
+                                                                        Binding="{Binding AreaText}" />
+                                                </DataGrid.Columns>
+                                            </DataGrid>
+                                        </StackPanel>
+                                    </Border>
+
                                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                         <Button Content="OCR で読み取る" Padding="10,4" FontSize="12"
                                                 Command="{Binding RunOcrCommand}" />
@@ -2370,6 +2423,7 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </StackPanel>
+                        </ScrollViewer>
                     </DockPanel>
                 </Border>
 

@@ -374,6 +374,12 @@ public sealed class PdfReadPlanner
             issue => issue.Severity != MergeIssueSeverity.Block));
         issues.AddRange(reading.Issues);
 
+        // 表・帳票として読んだ場合は、行ではなく表の形で出す。
+        if (reading.ResolvedMode is OcrReadMode.Table or OcrReadMode.FixedForm)
+        {
+            return CompleteAsTable(preview, reading, request, issues);
+        }
+
         var lines = new List<PdfTextLine>();
 
         // 文字情報のあるページは OCR を通さない(元から正しい文字を画像化して落とさない)。
@@ -446,6 +452,170 @@ public sealed class PdfReadPlanner
                 ? PdfReadStage.Blocked
                 : PdfReadStage.Ready,
         };
+    }
+
+    /// <summary>
+    /// 表・帳票として読んだ結果を、行と列のまま出す。
+    ///
+    /// 帳票は「1 ページ 1 件」。項目の並びは指定した順で、
+    /// **読めなかった項目も列として残す**(空欄になるだけで、列ごと消えない)。
+    /// </summary>
+    private PdfReadPreview CompleteAsTable(
+        PdfReadPreview preview,
+        OcrDocumentReading reading,
+        PdfReadRequest request,
+        List<MergeIssue> issues)
+    {
+        var rows = reading.ResolvedMode == OcrReadMode.FixedForm
+            ? FormRows(reading)
+            : TableRows(reading, issues);
+
+        if (reading.UnresolvedCount > 0)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block,
+                $"確認が済んでいない項目が {reading.UnresolvedCount:N0} 件あります"
+                    + $"(要確認 {reading.NeedsReviewCount:N0} 件 / "
+                    + $"読取不能 {reading.UnreadableCount:N0} 件 / "
+                    + $"見つからない {reading.MissingCount:N0} 件)。"
+                    + "すべて確認してから出力してください。"));
+        }
+
+        if (rows.Count <= 1)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block, "この PDF から表を取り出せませんでした。"));
+        }
+
+        var (outputPath, auditPath, outputFileName) = ResolveOutput(request, issues);
+
+        SourceSnapshot snapshot;
+        try
+        {
+            snapshot = MutationSnapshot.Take(request.SourceFilePath);
+        }
+        catch (Exception ex)
+        {
+            return Blocked(issues, preview.SourceFileName, $"PDF ファイルを読み取れません: {ex.Message}");
+        }
+
+        return new PdfReadPreview
+        {
+            Kind = PdfDocumentKind.Table,
+            PageCount = preview.PageCount,
+            TableRows = rows,
+            Issues = issues,
+            SourceFileName = preview.SourceFileName,
+            OutputFileName = outputFileName,
+            OutputPath = outputPath,
+            AuditPath = auditPath,
+            Snapshot = snapshot,
+            Request = request,
+            PagePlans = preview.PagePlans,
+            OcrReading = reading,
+            Stage = issues.Any(issue => issue.Severity == MergeIssueSeverity.Block)
+                ? PdfReadStage.Blocked
+                : PdfReadStage.Ready,
+        };
+    }
+
+    /// <summary>帳票: 1 ページ 1 行。列は指定した項目の順。</summary>
+    internal static List<string[]> FormRows(OcrDocumentReading reading)
+    {
+        var names = reading.FieldNames;
+        if (names.Count == 0)
+        {
+            return [];
+        }
+
+        var header = new[] { "ページ" }.Concat(names).ToArray();
+        var rows = new List<string[]> { header };
+
+        foreach (var page in reading.Items
+            .Select(item => item.PageNumber)
+            .Distinct()
+            .Order())
+        {
+            var byName = reading.Items
+                .Where(item => item.PageNumber == page && item.FieldName is not null)
+                .GroupBy(item => item.FieldName!)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+
+            var row = new string[names.Count + 1];
+            row[0] = page.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+            for (var index = 0; index < names.Count; index++)
+            {
+                row[index + 1] = byName.TryGetValue(names[index], out var item)
+                    ? item.FinalText
+                    : string.Empty;
+            }
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
+
+    /// <summary>表: ページごとの行を縦につなぐ。2 ページ目以降の見出しは落とす。</summary>
+    internal static List<string[]> TableRows(OcrDocumentReading reading, List<MergeIssue> issues)
+    {
+        var rows = new List<string[]>();
+        string[]? header = null;
+        var removedHeaders = 0;
+
+        foreach (var page in reading.Items.Select(item => item.PageNumber).Distinct().Order())
+        {
+            var cells = reading.Items
+                .Where(item => item.PageNumber == page && item.Row is not null)
+                .ToList();
+
+            if (cells.Count == 0)
+            {
+                continue;
+            }
+
+            var width = cells.Max(item => item.Column!.Value) + 1;
+            var pageRows = new List<string[]>();
+
+            foreach (var group in cells.GroupBy(item => item.Row!.Value).OrderBy(group => group.Key))
+            {
+                var row = new string[width];
+                for (var index = 0; index < width; index++)
+                {
+                    row[index] = string.Empty;
+                }
+
+                foreach (var cell in group)
+                {
+                    row[cell.Column!.Value] = cell.FinalText;
+                }
+
+                pageRows.Add(row);
+            }
+
+            if (header is null)
+            {
+                header = pageRows[0];
+            }
+            else if (pageRows[0].SequenceEqual(header, StringComparer.Ordinal))
+            {
+                pageRows.RemoveAt(0);
+                removedHeaders++;
+            }
+
+            rows.AddRange(pageRows);
+        }
+
+        if (removedHeaders > 0)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Warning,
+                $"2 ページ目以降で同じ項目名の行が {removedHeaders:N0} 回繰り返されていたため、"
+                    + "見出しの繰り返しとして 1 つにまとめました。"));
+        }
+
+        return rows;
     }
 
     /// <summary>確認済みの読み取りを「ページ / 行 / 内容」にする。修正した文字を使う。</summary>

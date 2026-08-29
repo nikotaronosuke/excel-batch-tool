@@ -27,6 +27,29 @@ dotnet run --project PdfFusionBench -- <work-dir> fuse     # 統合方式を総�
 いちばん重視した指標は完全一致率ではなく、
 **自動確定にしたのに間違っていた件数**(false AutoAccepted)。
 
+## 傾き / スキャン表 / 定型帳票 / 印 を測った手順(Phase 2F-B2)
+
+```
+dotnet run --project PdfScanBench -- <packDir> <work-dir>          # 全部
+dotnet run --project PdfScanBench -- <packDir> <work-dir> deskew   # 傾きだけ
+dotnet run --project PdfScanBench -- <packDir> <work-dir> table    # 表だけ
+dotnet run --project PdfScanBench -- <packDir> <work-dir> form     # 帳票だけ
+dotnet run --project PdfScanBench -- <packDir> <work-dir> mark     # 印だけ
+```
+
+`<packDir>` は `tools/OcrPackBuilder` で組んだ Offline OCR Pack のフォルダー。
+**製品と同じ経路そのもの**(`OcrPack.Load` → `PdfScanReader` → 確認)で測る。
+ベンチ専用の近道を作ると測った数値が製品の挙動と一致しなくなるため。
+
+帳票では完全一致率と並べて **指定した項目のうち結果に現れた割合**
+(Expected field coverage)を出す。読めなかった項目が結果から消えていれば
+ここが 100% を割るので、「消えた」ことを数字で見つけられる。
+
+fixture の劣化・傾き・かすれは実物に寄せる。**印の線の太さを 2px(300dpi で
+0.17mm)にしていたとき判定が 0/6 になった**が、これは fixture 側が細すぎた
+だけで、実際のペン相当(6px)にすると 100% になった。
+測定結果が悪いときは、まず fixture が現実的かを疑う。
+
 ## 安全上の決まり
 
 - テスト用 PDF は**すべて架空データを生成コードから作る**。第三者の実データ・

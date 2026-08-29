@@ -619,8 +619,9 @@ public sealed class OcrScanReadTests
     // ── 傾き・表らしいスキャン(次の段階へ送る) ────────────
 
     [Fact]
-    public void ATiltedScan_IsBlockedBeforeAnyRecognitionRuns()
+    public void ATiltedScan_IsStraightenedBeforeReading()
     {
+        // Phase 2F-B1 は傾きを見つけたら止めていた。2F-B2 で直してから読むようにした。
         using var dir = new TempDir();
         var pdf = dir.File("傾き.pdf");
         TestPdfFactory.CreateImageOnly(pdf, pages: 2);
@@ -633,7 +634,28 @@ public sealed class OcrScanReadTests
         var reading = Read(engine, pdf, [1, 2]);
 
         Assert.Equal([2], reading.NeedsDeskewPages);
-        Assert.Contains(reading.Issues, issue => issue.Message.Contains("傾いています", StringComparison.Ordinal));
+        Assert.Empty(reading.Issues);
+
+        // 傾いていないページは回さない。傾いたページだけ逆向きに回して読む。
+        Assert.Equal([0, -3.4], engine.DeskewAngles);
+        Assert.NotEmpty(reading.Items);
+    }
+
+    [Fact]
+    public void AScanTiltedTooFarIsStillBlocked()
+    {
+        using var dir = new TempDir();
+        var pdf = dir.File("大きく傾き.pdf");
+        TestPdfFactory.CreateImageOnly(pdf, pages: 1);
+
+        var engine = new FakeOcrEngine()
+            .Page(1, FakeOcrEngine.Agreed("内容", 0.99))
+            .Probe(1, skew: 9.0, horizontal: 0, vertical: 0);
+
+        var reading = Read(engine, pdf, [1]);
+
+        Assert.Contains(reading.Issues, issue =>
+            issue.Message.Contains("傾きが大きすぎる", StringComparison.Ordinal));
 
         // 何分もかかる認識を始める前に止める。
         Assert.Empty(engine.ReadPages);
@@ -641,23 +663,28 @@ public sealed class OcrScanReadTests
     }
 
     [Fact]
-    public void ATableLikeScan_IsBlockedAndKeptForTheNextStage()
+    public void ATableLikeScan_IsReadAsATable()
     {
+        // Phase 2F-B1 は罫線の格子を見つけたら止めていた。2F-B2 で表として読む。
         using var dir = new TempDir();
         var pdf = dir.File("表スキャン.pdf");
         TestPdfFactory.CreateImageOnly(pdf, pages: 1);
 
         var engine = new FakeOcrEngine()
-            .Page(1, FakeOcrEngine.Agreed("商品コード", 0.99))
-            .Probe(1, skew: 0, horizontal: 6, vertical: 5);
+            .Page(1,
+                FakeOcrEngine.At("商品コード", 0.99, new OcrBox(60, 110, 90, 20)),
+                FakeOcrEngine.At("商品名", 0.99, new OcrBox(210, 110, 90, 20)),
+                FakeOcrEngine.At("A0001", 0.99, new OcrBox(60, 150, 90, 20)),
+                FakeOcrEngine.At("架空の商品", 0.99, new OcrBox(210, 150, 90, 20)))
+            .Probe(1, skew: 0, horizontal: 3, vertical: 3)
+            .Rulings(1, rows: [100, 140, 180], columns: [50, 200, 350]);
 
         var reading = Read(engine, pdf, [1]);
 
         Assert.Equal([1], reading.TableLikePages);
-        Assert.Contains(reading.Issues, issue =>
-            issue.Message.Contains("スキャンされた表の可能性", StringComparison.Ordinal)
-            && issue.Message.Contains("次の段階", StringComparison.Ordinal));
-        Assert.Empty(engine.ReadPages);
+        Assert.Empty(reading.Issues);
+        Assert.Equal(4, reading.Items.Count);
+        Assert.All(reading.Items, item => Assert.NotNull(item.Row));
     }
 
     [Fact]
@@ -670,10 +697,11 @@ public sealed class OcrScanReadTests
         // 記入欄の下線のように横線だけが並ぶページは表とみなさない。
         var engine = new FakeOcrEngine()
             .Page(1, FakeOcrEngine.Agreed("氏名", 0.99))
-            .Probe(1, skew: 0, horizontal: 8, vertical: 0);
+            .Probe(1, skew: 0, horizontal: 8, vertical: 0, underlines: 8);
 
         var reading = Read(engine, pdf, [1]);
 
+        // 下線だけの帳票を表と誤判定しない(Phase 2F-A の再発防止)。
         Assert.Empty(reading.TableLikePages);
         Assert.Equal([1], engine.ReadPages);
     }

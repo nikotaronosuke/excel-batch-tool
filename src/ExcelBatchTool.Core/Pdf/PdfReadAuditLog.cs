@@ -81,10 +81,18 @@ internal static class PdfReadAuditLog
                 Dpi = reading.EngineInfo.Dpi,
                 AutoAcceptThreshold = OcrFusion.AutoAcceptThreshold,
                 OcrPageCount = reading.OcrPages.Count,
+                Mode = ModeName(reading.ResolvedMode),
+                DeskewedPageCount = reading.NeedsDeskewPages.Count,
+                ScanTablePageCount = reading.TableLikePages.Count,
+                FormPageCount = reading.FormPages.Count,
+                ExpectedFieldCount = reading.FieldNames.Count == 0
+                    ? 0
+                    : reading.FieldNames.Count * reading.FormPages.Count,
                 ItemCount = reading.Items.Count,
                 AutoAcceptedCount = reading.InitiallyAutoAcceptedCount,
                 NeedsReviewCount = reading.InitiallyNeedsReviewCount,
                 UnreadableCount = reading.InitiallyUnreadableCount,
+                MissingCount = reading.InitiallyMissingCount,
                 UserConfirmedCount = reading.UserConfirmedCount,
                 UserEditedCount = reading.UserEditedCount,
             },
@@ -93,6 +101,13 @@ internal static class PdfReadAuditLog
 
         JsonSerializer.Serialize(stream, document, Options);
     }
+
+    private static string ModeName(Ocr.OcrReadMode mode) => mode switch
+    {
+        Ocr.OcrReadMode.Table => "table",
+        Ocr.OcrReadMode.FixedForm => "fixed-form",
+        _ => "lines",
+    };
 
     internal static string KindName(PdfDocumentKind kind) => kind switch
     {
@@ -164,6 +179,21 @@ internal static class PdfReadAuditLog
 
         public int OcrPageCount { get; init; }
 
+        /// <summary>どう組み立てたか(文章 / 表 / 帳票)。</summary>
+        public string Mode { get; init; } = string.Empty;
+
+        /// <summary>傾きを直したページ数。</summary>
+        public int DeskewedPageCount { get; init; }
+
+        /// <summary>表として読んだページ数。</summary>
+        public int ScanTablePageCount { get; init; }
+
+        /// <summary>帳票として読んだページ数。</summary>
+        public int FormPageCount { get; init; }
+
+        /// <summary>帳票として読むときに指定した項目の総数(ページ数 × 項目数)。</summary>
+        public int ExpectedFieldCount { get; init; }
+
         public int ItemCount { get; init; }
 
         public int AutoAcceptedCount { get; init; }
@@ -171,6 +201,9 @@ internal static class PdfReadAuditLog
         public int NeedsReviewCount { get; init; }
 
         public int UnreadableCount { get; init; }
+
+        /// <summary>読む場所は分かっていたのに、何も読み取れなかった件数。</summary>
+        public int MissingCount { get; init; }
 
         public int UserConfirmedCount { get; init; }
 
