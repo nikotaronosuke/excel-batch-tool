@@ -454,6 +454,12 @@ public sealed class OcrTableAndFormTests
         Assert.False(blocked.CanExecute);
         Assert.Contains(blocked.Blocks, issue => issue.Message.Contains("見つからない 2 件"));
 
+        // 店舗コードは読めているが、0 と O を取り違えても分からないので
+        // 自動確定しない(FieldAutoAcceptPolicy)。人が見て、そのままでよいと決める。
+        var code = reading.Items.Single(item => item.FieldName == "店舗コード");
+        Assert.Equal(OcrItemStatus.NeedsReview, code.InitialStatus);
+        code.Confirm();
+
         // 人が原文を見て入れれば出せる。
         foreach (var item in reading.Items.Where(item => !item.IsResolved))
         {
@@ -831,6 +837,158 @@ public sealed class OcrTableAndFormTests
 
     private static OcrPackStatus UsablePack
         => new(IsPresent: true, IsUsable: true, "OCR Pack を使えます。", "テスト");
+
+    // --- 列の形による自動確定の抑制(Phase 2F-B2) ---
+    //
+    // 上下逆に切り出されたセルは、両モデルへ同じ間違った画像が入るので
+    // 一致も自信も当てにならない(実測 A0096 → 9600 を自信 99.8% で自動確定)。
+    // 気づけるのは「同じ列の他の行と文字の種類が違う」ことだけ。
+
+    [Fact]
+    public void ColumnShapeIsIgnoredWhenThereAreTooFewSamples()
+        => Assert.Equal(
+            ColumnShapeGuard.Shape.None,
+            ColumnShapeGuard.MajorityShape(["A0001", "A0002", "A0003"]));
+
+    [Fact]
+    public void ColumnShapeIsIgnoredWhenNoShapeStandsOut()
+    {
+        // 3 種類が均等(それぞれ 1/3)なら「その列らしい形」は決められない。
+        var majority = ColumnShapeGuard.MajorityShape(
+            ["A0001", "B0002", "C0003", "1234", "5678", "9012", "架空", "備考", "見本"]);
+        Assert.Equal(ColumnShapeGuard.Shape.None, majority);
+    }
+
+    [Fact]
+    public void CellThatDiffersFromItsColumnIsNotAutoAccepted()
+    {
+        // 実測と同じ割れ方(英字+数字 11 / 数字 9 / 日本語 1)。
+        var column = Enumerable.Repeat("A0001", 11)
+            .Concat(Enumerable.Repeat("9600", 9))
+            .Append("架空")
+            .ToList();
+
+        var majority = ColumnShapeGuard.MajorityShape(column);
+        Assert.Equal(
+            ColumnShapeGuard.Shape.Latin | ColumnShapeGuard.Shape.Digit, majority);
+
+        Assert.True(ColumnShapeGuard.CanAutoAccept(majority, "A0096"));
+        Assert.False(ColumnShapeGuard.CanAutoAccept(majority, "9600"));
+
+        // 空のセルは形で疑わない(読めなかったことは別に扱う)。
+        Assert.True(ColumnShapeGuard.CanAutoAccept(majority, string.Empty));
+    }
+
+    [Fact]
+    public void AmountsOfDifferentLengthCountAsTheSameShape()
+    {
+        // 桁区切りを数えると「999」と「1,234」が別物になり、正しいセルまで人へ回る。
+        // 記号を数えない決まりは、この失敗を実際に踏んでから入れた。
+        var column = new[] { "1,234", "12,345", "999", "1,000,000", "22" };
+        var majority = ColumnShapeGuard.MajorityShape(column);
+
+        Assert.NotEqual(ColumnShapeGuard.Shape.None, majority);
+        foreach (var text in column)
+        {
+            Assert.True(ColumnShapeGuard.CanAutoAccept(majority, text));
+        }
+    }
+
+    [Fact]
+    public void UpsideDownCellInATableGoesToReviewWithReason()
+    {
+        using var dir = new TempDir();
+        var pdf = dir.File("逆さ.pdf");
+        TestPdfFactory.CreateImageOnly(pdf, pages: 1);
+
+        // 1 列目は「英字 + 数字」の並び。1 行だけ数字だけに読めている。
+        var lines = new List<OcrRawLine>();
+        for (var row = 0; row < 6; row++)
+        {
+            var text = row == 3 ? "9600" : $"A000{row}";
+            lines.Add(FakeOcrEngine.At(text, 0.99, new OcrBox(80, 100 + (row * 40), 90, 20)));
+            lines.Add(FakeOcrEngine.At($"架空{row}", 0.99, new OcrBox(240, 100 + (row * 40), 90, 20)));
+        }
+
+        var engine = new FakeOcrEngine()
+            .Page(1, [.. lines])
+            .Probe(1, skew: 0, horizontal: 0, vertical: 0);
+
+        var reading = new PdfScanReader().Read(
+            engine, pdf, [1], new OcrReadOptions { Mode = OcrReadMode.Table });
+
+        var odd = reading.Items.Single(item => item.Text == "9600");
+        Assert.Equal(OcrItemStatus.NeedsReview, odd.InitialStatus);
+        Assert.Contains("上下逆", odd.Reason);
+
+        // 同じ列の他の行は巻き添えにしない。
+        var normal = reading.Items.Single(item => item.Text == "A0002");
+        Assert.Equal(OcrItemStatus.AutoAccepted, normal.InitialStatus);
+    }
+
+    // --- 項目の種類ごとの自動確定の抑制(Phase 2F-B2) ---
+    //
+    // 実測で誤って自動確定した 4 件はすべて「S001-24」を「SO01-24」と読んだもので、
+    // 自信は 98.4〜98.8% あった。2 つのモデルは同じ字形の取り違えを共有するため、
+    // 一致も自信も根拠にならない。形で止める。
+
+    [Theory]
+    [InlineData("SO01-24", false)]  // O は 0 と取り違えやすい
+    [InlineData("S001-24", false)]  // 0 も同じく判別できない。どちらでも止める
+    [InlineData("AX-CDEF", true)]   // 取り違えやすい字が無いので自動確定してよい
+    [InlineData("AB-CDEF", false)]  // B は 8 と取り違えやすい
+    [InlineData("", false)]
+    public void CodeFieldAutoAcceptsOnlyWhenNoConfusableGlyph(string text, bool expected)
+        => Assert.Equal(expected, FieldAutoAcceptPolicy.CanAutoAccept(FormFieldKind.Code, text));
+
+    [Theory]
+    [InlineData("1,234,567", true)]
+    [InlineData("-1,234", true)]
+    [InlineData("1,O34", false)]     // 数字のはずの場所に英字が出たら形が壊れている
+    [InlineData("1234 円", false)]
+    public void NumberFieldAutoAcceptsOnlyWhenShapeIsNumeric(string text, bool expected)
+        => Assert.Equal(expected, FieldAutoAcceptPolicy.CanAutoAccept(FormFieldKind.NumberLike, text));
+
+    [Theory]
+    [InlineData(FormFieldKind.Text)]
+    [InlineData(FormFieldKind.Choice)]
+    public void ProseFieldsAreNotRestricted(FormFieldKind kind)
+        => Assert.True(FieldAutoAcceptPolicy.CanAutoAccept(kind, "架空の担当者"));
+
+    [Fact]
+    public void ConfidentButConfusableCodeGoesToReviewWithReason()
+    {
+        using var dir = new TempDir();
+        var pdf = dir.File("コード.pdf");
+        TestPdfFactory.CreateImageOnly(pdf, pages: 1);
+
+        var engine = new FakeOcrEngine()
+            .Page(1,
+                FakeOcrEngine.At("SO01-24", 0.99, new OcrBox(200, 100, 120, 30)),
+                FakeOcrEngine.At("1234567", 0.99, new OcrBox(200, 140, 120, 30)),
+                FakeOcrEngine.At("架空の備考", 0.99, new OcrBox(200, 180, 300, 30)))
+            .Probe(1, skew: 0, horizontal: 0, vertical: 0);
+
+        var planner = new PdfReadPlanner();
+        var preview = planner.CreatePreview(new PdfReadRequest { SourceFilePath = pdf }, UsablePack);
+        var reading = new PdfScanReader().Read(
+            engine, pdf, preview.OcrPageNumbers,
+            new OcrReadOptions { Mode = OcrReadMode.FixedForm, Template = Template() });
+
+        var code = reading.Items.Single(item => item.FieldName == "店舗コード");
+        Assert.Equal(OcrItemStatus.NeedsReview, code.InitialStatus);
+        Assert.Contains("取り違えやすい字", code.Reason);
+        Assert.Equal("SO01-24", code.Text);
+
+        // 自信で落としたのではないことを明示しておく。
+        Assert.True(code.Confidence >= OcrFusion.AutoAcceptThreshold);
+
+        // 他の種類は巻き添えにしない。
+        Assert.Equal(OcrItemStatus.AutoAccepted,
+            reading.Items.Single(item => item.FieldName == "売上").InitialStatus);
+        Assert.Equal(OcrItemStatus.AutoAccepted,
+            reading.Items.Single(item => item.FieldName == "備考").InitialStatus);
+    }
 
     private static FormTemplate Template() => new()
     {

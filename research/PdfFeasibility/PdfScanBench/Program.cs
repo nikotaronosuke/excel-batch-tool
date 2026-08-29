@@ -102,6 +102,7 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
     }
 
     int total = 0, exact = 0, autoAccepted = 0, falseAuto = 0, rowsOk = 0;
+    var falseCases = new List<string>();
 
     foreach (var page in pageList)
     {
@@ -133,6 +134,16 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
                     if (!correct)
                     {
                         falseAuto++;
+                        var col = cells.Where(i => i.Column == c && !string.IsNullOrWhiteSpace(i.Text))
+                            .Select(i => i.Text).ToList();
+                        var shapes = col.GroupBy(ColumnShapeGuard.ShapeOf)
+                            .OrderByDescending(g => g.Count())
+                            .Select(g => $"{g.Key}={g.Count()}");
+                        falseCases.Add($"        列{c} の形: {string.Join(" ", shapes)} "
+                            + $"(全 {col.Count} / 多数派 {ColumnShapeGuard.MajorityShape(col)})");
+                        falseCases.Add($"      p{page} r{r}c{c} "
+                            + $"読み「{cell.Text}」 正「{truth[r][c]}」 "
+                            + $"自信 {cell.Confidence:P1}");
                     }
                 }
             }
@@ -171,6 +182,11 @@ void MeasureTable(string label, bool ruled, int pages, int rows, double tilt, bo
         $"{label,-16} セル {exact,5}/{total,-5} = {(double)exact / total,6:P1}  "
         + $"行数一致 {rowsOk}/{pages}  自動確定 {(double)autoAccepted / total,5:P0}  "
         + $"誤確定 {falseAuto}  {timer.Elapsed.TotalSeconds / pages,5:F2} s/page");
+
+    foreach (var line in falseCases)
+    {
+        Console.WriteLine(line);
+    }
 }
 
 void MeasureForm(string label, int pages, double shift, double tilt, double scale)
@@ -200,6 +216,11 @@ void MeasureForm(string label, int pages, double shift, double tilt, double scal
     var expected = pages * template.Fields.Count;
     int exact = 0, autoAccepted = 0, falseAuto = 0;
 
+    // 誤って自動確定したものは、件数だけでなく中身を必ず出す。
+    // 「何を間違えたのか」が分からないと、閾値を上げるべきなのか
+    // そもそも別の原因なのかを判断できないため(2F-B1.1 の測定誤りの教訓)。
+    var falseCases = new List<string>();
+
     foreach (var page in pageList)
     {
         var fields = truth[page - 1];
@@ -218,6 +239,9 @@ void MeasureForm(string label, int pages, double shift, double tilt, double scal
                 if (!correct)
                 {
                     falseAuto++;
+                    falseCases.Add($"      p{page} [{item.FieldName}] "
+                        + $"読み「{item.Text}」 正「{fields[item.FieldName!]}」 "
+                        + $"自信 {item.Confidence:P1}");
                 }
             }
         }
@@ -230,6 +254,11 @@ void MeasureForm(string label, int pages, double shift, double tilt, double scal
         + $"網羅 {coverage,6:P1}  自動確定 {(double)autoAccepted / expected,5:P0}  "
         + $"誤確定 {falseAuto}  見つからない {reading.InitiallyMissingCount,4}  "
         + $"{timer.Elapsed.TotalSeconds / pages,5:F2} s/page  {mb,4:F0} MB");
+
+    foreach (var line in falseCases)
+    {
+        Console.WriteLine(line);
+    }
 }
 
 void MeasureMarks(string label, bool degraded, double tilt)
