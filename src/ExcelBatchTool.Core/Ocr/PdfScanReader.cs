@@ -20,6 +20,7 @@ public sealed class PdfScanReader
     /// <summary>画像から罫線の格子が見つかったら「表らしいスキャン」とみなす。</summary>
     public const int TableRulingThreshold = 3;
 
+    /// <summary>PDF を開いて読み、終わったら閉じる(テストと測定用の入口)。</summary>
     public OcrDocumentReading Read(
         IOcrEngine engine,
         string pdfFilePath,
@@ -28,7 +29,22 @@ public sealed class PdfScanReader
         CancellationToken cancellationToken = default)
     {
         using var source = engine.Open(pdfFilePath);
+        return Read(source, engine.Info, pages, progress, cancellationToken);
+    }
 
+    /// <summary>
+    /// 開いたままの PDF を読む。
+    ///
+    /// 確認画面はページ画像を出すために読み取りのあとも PDF を開いたままにするので、
+    /// 開閉の責任は呼び出し側に持たせる。
+    /// </summary>
+    public OcrDocumentReading Read(
+        IOcrPageSource source,
+        OcrEngineInfo engineInfo,
+        IReadOnlyList<int> pages,
+        IProgress<OcrProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
         var probes = new List<OcrPageProbe>();
         progress?.Report(new OcrProgress(0, pages.Count, IsProbe: true));
 
@@ -77,7 +93,7 @@ public sealed class PdfScanReader
             {
                 Items = [],
                 OcrPages = pages,
-                EngineInfo = engine.Info,
+                EngineInfo = engineInfo,
                 NeedsDeskewPages = needsDeskew,
                 TableLikePages = tableLike,
                 Issues = issues,
@@ -111,7 +127,7 @@ public sealed class PdfScanReader
         {
             Items = items,
             OcrPages = pages,
-            EngineInfo = engine.Info,
+            EngineInfo = engineInfo,
             NeedsDeskewPages = needsDeskew,
             TableLikePages = tableLike,
             Issues = issues,

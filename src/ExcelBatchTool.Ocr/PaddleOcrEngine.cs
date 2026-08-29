@@ -175,7 +175,7 @@ public sealed class PaddleOcrEngine : IOcrEngine
             }
         }
 
-        public byte[] RenderPng(int pageNumber, int dpi, CancellationToken cancellationToken)
+        public OcrPageImage RenderPage(int pageNumber, int dpi, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -183,7 +183,9 @@ public sealed class PaddleOcrEngine : IOcrEngine
                 pdf, page: pageNumber - 1, options: new PDFtoImage.RenderOptions(Dpi: dpi));
             using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
             using var encoded = image.Encode(SkiaSharp.SKEncodedImageFormat.Png, 80);
-            return encoded.ToArray();
+
+            return new OcrPageImage(
+                pageNumber, encoded.ToArray(), bitmap.Width, bitmap.Height, (double)dpi / OcrDpi);
         }
 
         public void Dispose()

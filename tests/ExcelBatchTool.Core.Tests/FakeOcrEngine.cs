@@ -21,6 +21,9 @@ internal sealed class FakeOcrEngine : IOcrEngine
 
     public List<int> ProbedPages { get; } = [];
 
+    /// <summary>確認用に描いたページ(手元に置く枚数の確認に使う)。</summary>
+    public List<int> RenderedPages { get; } = [];
+
     public int OpenCount { get; private set; }
 
     public bool IsDisposed { get; private set; }
@@ -80,8 +83,14 @@ internal sealed class FakeOcrEngine : IOcrEngine
             return engine._pages.TryGetValue(pageNumber, out var lines) ? lines : [];
         }
 
-        public byte[] RenderPng(int pageNumber, int dpi, CancellationToken cancellationToken)
-            => [0x89, 0x50, 0x4E, 0x47];
+        public OcrPageImage RenderPage(int pageNumber, int dpi, CancellationToken cancellationToken)
+        {
+            engine.RenderedPages.Add(pageNumber);
+
+            // 実際の画像は要らない。大きさと倍率が正しく伝わることだけを確かめる。
+            return new OcrPageImage(
+                pageNumber, [0x89, 0x50, 0x4E, 0x47], 1240, 1754, (double)dpi / 300);
+        }
 
         public void Dispose()
         {

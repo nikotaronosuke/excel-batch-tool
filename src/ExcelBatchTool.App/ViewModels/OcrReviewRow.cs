@@ -60,6 +60,16 @@ public sealed class OcrReviewRow(OcrItem item) : ObservableObject
         RaiseAll();
     }
 
+    /// <summary>編集中の文字を元の読み取りへ戻す(確認済みにはしない)。</summary>
+    public void ResetEdit()
+    {
+        Item.EditedText = null;
+        RaiseAll();
+    }
+
+    /// <summary>外から状態が変わったときに、画面の表示を更新する。</summary>
+    public void Refresh() => RaiseAll();
+
     /// <summary>確認を取り消して、読み取った直後の状態へ戻す。</summary>
     public void Unconfirm()
     {

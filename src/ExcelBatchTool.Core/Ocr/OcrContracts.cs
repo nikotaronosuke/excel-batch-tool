@@ -61,8 +61,11 @@ public interface IOcrPageSource : IDisposable
     /// <summary>ページを 2 つのモデルで読む。</summary>
     IReadOnlyList<OcrRawLine> Read(int pageNumber, CancellationToken cancellationToken);
 
-    /// <summary>確認画面に出すためのページ画像。</summary>
-    byte[] RenderPng(int pageNumber, int dpi, CancellationToken cancellationToken);
+    /// <summary>
+    /// 確認画面に出すためのページ画像。OCR より粗い解像度でよいので、
+    /// 「OCR の座標 → この画像の座標」の倍率も一緒に返す。
+    /// </summary>
+    OcrPageImage RenderPage(int pageNumber, int dpi, CancellationToken cancellationToken);
 }
 
 /// <summary>

@@ -46,6 +46,10 @@ if (args[1] != "fuse")
 // 実測で選んだ統合方式。per-field の内訳はこの方式についてだけ出す。
 const string Chosen = "agree-then-charclass-strict";
 
+// 「その項目を読もうとした」とみなす下限。これを下回る領域は別の項目を読んでいるだけで、
+// その項目については何も主張していない。
+var AttemptFloor = double.TryParse(Environment.GetEnvironmentVariable("ATTEMPT_FLOOR"), out var floor) ? floor : 0.5;
+
 var report = new List<object>();
 
 foreach (var target in targets)
@@ -70,7 +74,7 @@ foreach (var target in targets)
 
     foreach (var strategy in Fusion.All)
     {
-        foreach (var threshold in new[] { 0.90, 0.95, 0.98 })
+        foreach (var threshold in new[] { 0.98, 0.985, 0.99, 0.995, 0.999 })
         {
             var fused = capture.Regions
                 .Select(region => strategy.Fuse(region, threshold))
@@ -86,6 +90,7 @@ foreach (var target in targets)
             var falseAutoAccepted = 0;
             var reviewCaught = 0;
             var missed = 0;
+            var notAttempted = 0;
             var perField = new Dictionary<string, (int Total, int Exact)>(StringComparer.Ordinal);
 
             foreach (var (page, name, value) in fields)
@@ -106,10 +111,24 @@ foreach (var target in targets)
                 var stat = perField.GetValueOrDefault(name);
                 perField[name] = (stat.Total + 1, stat.Exact + (correct ? 1 : 0));
 
-                // その値を読んだはずの領域 = 値にいちばん近い領域。
+                // その値を読もうとした領域 = 値にいちばん近い領域。
+                // ただし似ても似つかない領域を「その項目を読んだ」とはみなさない。
+                // 近い領域が無いのは「どの領域もその項目を読んでいない(検出漏れ)」であって、
+                // 「自動確定にしたのに間違っていた」ではない。ここを分けないと検出漏れが
+                // 誤確定として数えられる(実測で 1 件そうなっていた)。
                 var owner = pageRegions
                     .OrderByDescending(region => TextMetrics.CharacterAccuracy(value, region.Text))
                     .First();
+
+                if (TextMetrics.CharacterAccuracy(value, owner.Text) < AttemptFloor)
+                {
+                    if (!correct)
+                    {
+                        notAttempted++;
+                    }
+
+                    continue;
+                }
 
                 if (owner.Status == FusedStatus.AutoAccepted)
                 {
@@ -117,6 +136,13 @@ foreach (var target in targets)
                     if (!correct)
                     {
                         falseAutoAccepted++;
+                        if (strategy.Name == Chosen)
+                        {
+                            Console.WriteLine(
+                                $"      FALSE-AUTO thr={threshold} p{page} {name} " +
+                                $"GT=\"{value}\" owner=\"{owner.Text}\" score={owner.Score:F4} " +
+                                $"reason={owner.Reason}");
+                        }
                     }
                 }
                 else if (!correct)
@@ -131,12 +157,13 @@ foreach (var target in targets)
 
             }
 
-            var wrong = total - exact;
+            var wrong = total - exact - notAttempted;
             Console.WriteLine(
                 $"{strategy.Name,-26} {threshold:0.00}  " +
                 $"{(double)exact / total,6:P1}  {(double)autoAccepted / total,5:P0}  " +
                 $"{(double)falseAutoAccepted / total,9:P2}  " +
-                $"{(wrong == 0 ? 1 : (double)reviewCaught / wrong),11:P1}  {missed,5}");
+                $"{(wrong == 0 ? 1 : (double)reviewCaught / wrong),11:P1}  {missed,5}"
+                + $"   検出漏れ {notAttempted}");
 
             if (strategy.Name == Chosen && threshold == 0.98)
             {

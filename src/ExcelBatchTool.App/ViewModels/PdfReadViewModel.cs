@@ -45,9 +45,20 @@ public sealed class PdfReadViewModel : ObservableObject
 
     private OcrPackStatus? _packStatus;
     private OcrDocumentReading? _reading;
+    private OcrReviewSession? _session;
     private CancellationTokenSource? _ocrCancellation;
     private string _progressText = string.Empty;
-    private bool _showOnlyNeedsReview = true;
+
+    // 確認中は PDF を開いたままにする(ページ画像を出すため)。
+    private IOcrEngine? _reviewEngine;
+    private IOcrPageSource? _reviewSource;
+    private OcrPageImageCache? _imageCache;
+    private OcrPageImage? _pageImage;
+    private (OcrPageImage Page, System.Windows.Media.Imaging.BitmapSource Source)? _pageImageSource;
+    private int _currentPage;
+    private double _zoom = 1;
+    private double _viewportWidth = 640;
+    private double _viewportHeight = 420;
 
     public PdfReadViewModel()
         : this(() => null)
@@ -69,9 +80,25 @@ public sealed class PdfReadViewModel : ObservableObject
             () => _ = AnalyzeAsync(), () => !IsBusy && SourceFilePath.Length > 0);
         RunOcrCommand = new RelayCommand(() => _ = RunOcrAsync(), () => CanRunOcr);
         CancelOcrCommand = new RelayCommand(CancelOcr, () => IsBusy && _ocrCancellation is not null);
-        ConfirmSelectedCommand = new RelayCommand(ConfirmSelected, () => SelectedItem is not null);
-        ConfirmAllShownCommand = new RelayCommand(
-            ConfirmAllShown, () => ReviewItems.Count > 0 && !IsBusy);
+        // 「まとめて確認済みにする」は置かない。要確認・読取不能は元のページを見ながら
+        // 1 件ずつ確認する、というのがこの段階の安全の要なので、迂回路を作らない。
+        ConfirmAndNextCommand = new RelayCommand(
+            () => ConfirmAndAdvance(useEdit: true), () => CanConfirmSelected);
+        ConfirmOriginalAndNextCommand = new RelayCommand(
+            () => ConfirmAndAdvance(useEdit: false), () => CanConfirmSelected);
+        CancelEditCommand = new RelayCommand(CancelEdit, () => SelectedItem is not null);
+        NextReviewCommand = new RelayCommand(
+            () => MoveReview(forward: true), () => HasReading && !IsBusy);
+        PreviousReviewCommand = new RelayCommand(
+            () => MoveReview(forward: false), () => HasReading && !IsBusy);
+        PreviousPageCommand = new RelayCommand(
+            () => ShowPage(CurrentPage - 1), () => HasReading && CurrentPage > 1);
+        NextPageCommand = new RelayCommand(
+            () => ShowPage(CurrentPage + 1), () => HasReading && CurrentPage < PageCount);
+        ZoomInCommand = new RelayCommand(() => SetZoom(Zoom * 1.25), () => HasPageImage);
+        ZoomOutCommand = new RelayCommand(() => SetZoom(Zoom / 1.25), () => HasPageImage);
+        ActualSizeCommand = new RelayCommand(() => SetZoom(1), () => HasPageImage);
+        FitCommand = new RelayCommand(FitToViewport, () => HasPageImage);
         ExecuteCommand = new RelayCommand(() => _ = ExecuteAsync(), () => CanExecute);
     }
 
@@ -93,9 +120,27 @@ public sealed class PdfReadViewModel : ObservableObject
 
     public RelayCommand CancelOcrCommand { get; }
 
-    public RelayCommand ConfirmSelectedCommand { get; }
+    public RelayCommand ConfirmAndNextCommand { get; }
 
-    public RelayCommand ConfirmAllShownCommand { get; }
+    public RelayCommand ConfirmOriginalAndNextCommand { get; }
+
+    public RelayCommand CancelEditCommand { get; }
+
+    public RelayCommand NextReviewCommand { get; }
+
+    public RelayCommand PreviousReviewCommand { get; }
+
+    public RelayCommand PreviousPageCommand { get; }
+
+    public RelayCommand NextPageCommand { get; }
+
+    public RelayCommand ZoomInCommand { get; }
+
+    public RelayCommand ZoomOutCommand { get; }
+
+    public RelayCommand ActualSizeCommand { get; }
+
+    public RelayCommand FitCommand { get; }
 
     public RelayCommand ExecuteCommand { get; }
 
@@ -237,6 +282,9 @@ public sealed class PdfReadViewModel : ObservableObject
 
     public bool HasReading => _reading is not null;
 
+    /// <summary>確認中でない(取り出した内容だけを見せる状態)。</summary>
+    public bool HasNoReading => _reading is null;
+
     public string ProgressText
     {
         get => _progressText;
@@ -258,30 +306,250 @@ public sealed class PdfReadViewModel : ObservableObject
         get => _selectedItem;
         set
         {
-            if (SetProperty(ref _selectedItem, value))
+            if (!SetProperty(ref _selectedItem, value))
             {
-                OnPropertyChanged(nameof(SelectedEngineText));
-                OnPropertyChanged(nameof(HasSelectedItem));
-                ConfirmSelectedCommand.RaiseCanExecuteChanged();
+                return;
             }
+
+            _session?.Select(value?.Item);
+
+            // 選んだ項目のページへ自動で移動し、その位置を強調して見えるところへ寄せる。
+            if (value is not null)
+            {
+                ShowPage(value.PageNumber);
+                BringHighlightIntoView();
+            }
+
+            OnPropertyChanged(nameof(SelectedEngineText));
+            OnPropertyChanged(nameof(HasSelectedItem));
+            OnPropertyChanged(nameof(SelectedPositionText));
+            RaiseHighlight();
+            RaiseCommandStates();
         }
     }
 
     public bool HasSelectedItem => SelectedItem is not null;
 
+    public bool CanConfirmSelected => SelectedItem is not null && !IsBusy;
+
     public string SelectedEngineText => SelectedItem?.EngineText ?? "-";
 
-    /// <summary>「要確認だけ」に絞る。120 ページを 1 件ずつ見せない。</summary>
-    public bool ShowOnlyNeedsReview
+    public string SelectedPositionText => SelectedItem is null
+        ? "-"
+        : $"{SelectedItem.PageNumber} ページ {SelectedItem.LineNumber} 行目";
+
+    /// <summary>
+    /// 自動確定も一覧に出すか。既定は出さない。
+    /// 自動確定したからといって、元のページを見られなくはしない。
+    /// </summary>
+    public bool ShowAutoAccepted
     {
-        get => _showOnlyNeedsReview;
+        get => _session?.ShowAutoAccepted ?? false;
         set
         {
-            if (SetProperty(ref _showOnlyNeedsReview, value))
+            if (_session is null || _session.ShowAutoAccepted == value)
             {
-                FillReviewItems();
+                return;
+            }
+
+            _session.ShowAutoAccepted = value;
+            OnPropertyChanged();
+            FillReviewItems();
+        }
+    }
+
+    // ── 元のページ画像 ─────────────────────────────────
+
+    /// <summary>確認用に描くときの解像度。OCR(300dpi)より粗くてよい。</summary>
+    public const int ViewDpi = 150;
+
+    /// <summary>読み取り位置がこれより小さく映るなら、読めるところまで拡大する。</summary>
+    public const double MinLegibleHeight = 24;
+
+    /// <summary>拡大するときに目指す、読み取り位置の高さ。</summary>
+    public const double PreferredHighlightHeight = 44;
+
+    /// <summary>選んだ位置が見えるところへスクロールしてほしい、という合図。</summary>
+    public event EventHandler<OcrDisplayRect>? ScrollToHighlightRequested;
+
+    public int PageCount => _preview?.PageCount ?? 0;
+
+    public int CurrentPage
+    {
+        get => _currentPage;
+        private set
+        {
+            if (SetProperty(ref _currentPage, value))
+            {
+                OnPropertyChanged(nameof(PageText));
+                RaiseCommandStates();
             }
         }
+    }
+
+    public string PageText => PageCount == 0 ? "-" : $"{CurrentPage} / {PageCount} ページ";
+
+    public OcrPageImage? PageImage => _pageImage;
+
+    public bool HasPageImage => _pageImage is not null;
+
+    /// <summary>画面に出すページ画像。読み込んだら凍結して、UI スレッド以外からも触れるようにする。</summary>
+    public System.Windows.Media.Imaging.BitmapSource? PageImageSource
+    {
+        get
+        {
+            if (_pageImage is not { } image)
+            {
+                return null;
+            }
+
+            if (_pageImageSource is { Source: var cachedSource, Page: var cachedPage }
+                && ReferenceEquals(cachedPage, image))
+            {
+                return cachedSource;
+            }
+
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = new MemoryStream(image.Png, writable: false);
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            _pageImageSource = (image, bitmap);
+            return bitmap;
+        }
+    }
+
+    /// <summary>ページ画像を表示する大きさ(拡大率を掛けたもの)。</summary>
+    public double ImageDisplayWidth => (_pageImage?.Width ?? 0) * Zoom;
+
+    public double ImageDisplayHeight => (_pageImage?.Height ?? 0) * Zoom;
+
+    public double Zoom
+    {
+        get => _zoom;
+        private set
+        {
+            if (SetProperty(ref _zoom, value))
+            {
+                OnPropertyChanged(nameof(ZoomText));
+                OnPropertyChanged(nameof(ImageDisplayWidth));
+                OnPropertyChanged(nameof(ImageDisplayHeight));
+                RaiseHighlight();
+            }
+        }
+    }
+
+    public string ZoomText => $"{Zoom:P0}";
+
+    /// <summary>選んでいる読み取り位置を、画像の上のどこへ描くか。</summary>
+    public OcrDisplayRect Highlight => SelectedItem is { } row && _pageImage is { } image
+        && row.PageNumber == CurrentPage
+            ? OcrBoxMapper.ToDisplay(row.Item.BoundingBox, image, Zoom)
+            : default;
+
+    public bool HasHighlight => SelectedItem is { } row
+        && _pageImage is not null
+        && row.PageNumber == CurrentPage;
+
+    public double HighlightLeft => Highlight.Left;
+
+    public double HighlightTop => Highlight.Top;
+
+    public double HighlightWidth => Highlight.Width;
+
+    public double HighlightHeight => Highlight.Height;
+
+    /// <summary>手元に置いているページ画像の枚数(メモリの確認用)。</summary>
+    public int CachedPageCount => _imageCache?.Count ?? 0;
+
+    public int PageRenderCount => _imageCache?.RenderCount ?? 0;
+
+    /// <summary>画面の大きさが変わったら、fit の計算に使う値を更新する。</summary>
+    public void SetViewport(double width, double height)
+    {
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        _viewportWidth = width;
+        _viewportHeight = height;
+    }
+
+    public void ShowPage(int page)
+    {
+        if (_imageCache is null || page < 1 || page > PageCount)
+        {
+            return;
+        }
+
+        if (_pageImage?.Page != page)
+        {
+            _pageImage = _imageCache.Get(page);
+            _imageCache.Preload(page, PageCount);
+
+            OnPropertyChanged(nameof(PageImage));
+            OnPropertyChanged(nameof(PageImageSource));
+            OnPropertyChanged(nameof(HasPageImage));
+            OnPropertyChanged(nameof(ImageDisplayWidth));
+            OnPropertyChanged(nameof(ImageDisplayHeight));
+            OnPropertyChanged(nameof(CachedPageCount));
+            OnPropertyChanged(nameof(PageRenderCount));
+        }
+
+        CurrentPage = page;
+        RaiseHighlight();
+    }
+
+    private void SetZoom(double zoom) => Zoom = Math.Clamp(zoom, 0.1, 4);
+
+    /// <summary>
+    /// 選んだ位置を見えるようにする。
+    ///
+    /// ページ全体に合わせた倍率だと 1 行は数画素にしかならず、原文と見比べられない。
+    /// 小さすぎるときだけ、読める大きさまで自動で拡大してからそこへ寄せる。
+    /// 利用者が自分で拡大しているときは、その倍率を尊重して触らない。
+    /// </summary>
+    private void BringHighlightIntoView()
+    {
+        if (SelectedItem is not { } row || _pageImage is not { } image)
+        {
+            return;
+        }
+
+        var rect = OcrBoxMapper.ToDisplay(row.Item.BoundingBox, image, Zoom);
+
+        if (rect.Height < MinLegibleHeight)
+        {
+            var boxHeight = row.Item.BoundingBox.Height * image.ScaleFromOcr;
+            if (boxHeight > 0)
+            {
+                SetZoom(PreferredHighlightHeight / boxHeight);
+                rect = OcrBoxMapper.ToDisplay(row.Item.BoundingBox, image, Zoom);
+            }
+        }
+
+        ScrollToHighlightRequested?.Invoke(this, rect);
+    }
+
+    private void FitToViewport()
+    {
+        if (_pageImage is { } image)
+        {
+            SetZoom(OcrBoxMapper.FitZoom(image, _viewportWidth, _viewportHeight));
+        }
+    }
+
+    private void RaiseHighlight()
+    {
+        OnPropertyChanged(nameof(Highlight));
+        OnPropertyChanged(nameof(HasHighlight));
+        OnPropertyChanged(nameof(HighlightLeft));
+        OnPropertyChanged(nameof(HighlightTop));
+        OnPropertyChanged(nameof(HighlightWidth));
+        OnPropertyChanged(nameof(HighlightHeight));
     }
 
     public string ReviewSummaryText => _reading is null
@@ -373,8 +641,7 @@ public sealed class PdfReadViewModel : ObservableObject
         StatusText = "PDF を解析しています…(元の PDF は読み取りのみ)";
         try
         {
-            _reading = null;
-            ReviewItems.Clear();
+            ResetReview();
 
             // OCR Pack は「スキャンページがあったときだけ」必要になる。
             // 無くてもここで失敗させない(文字情報のある PDF はそのまま読める)。
@@ -447,15 +714,37 @@ public sealed class PdfReadViewModel : ObservableObject
 
         try
         {
-            var reading = await Task.Run(
+            // 読み取りが終わってからも、確認用にページ画像を出すため PDF は開いたままにする。
+            var opened = await Task.Run(
                 () =>
                 {
-                    using var engine = _loadEngine(pack);
-                    return _scanReader.Read(engine, source, pages, progress, token);
+                    var engine = _loadEngine(pack);
+                    var pageSource = engine.Open(source);
+                    var reading = _scanReader.Read(pageSource, engine.Info, pages, progress, token);
+                    return (engine, pageSource, reading);
                 },
                 token);
 
+            CloseReviewSource();
+            _reviewEngine = opened.engine;
+            _reviewSource = opened.pageSource;
+            var reading = opened.reading;
+
+            _imageCache = new OcrPageImageCache(
+                page => _reviewSource!.RenderPage(page, ViewDpi, CancellationToken.None),
+                OcrPageImageCache.DefaultCapacity);
+
             _reading = reading;
+            _session = new OcrReviewSession(reading);
+
+            // まずページ全体が入る大きさにしておく。このあと項目を選ぶと、
+            // その読み取り位置が読める大きさまで自動で寄る。
+            if (reading.Items.Count > 0)
+            {
+                ShowPage(reading.Items[0].PageNumber);
+                FitToViewport();
+            }
+
             FillReviewItems();
 
             _preview = _planner.CompleteWithOcr(preview, reading);
@@ -470,14 +759,12 @@ public sealed class PdfReadViewModel : ObservableObject
         }
         catch (OperationCanceledException)
         {
-            _reading = null;
-            ReviewItems.Clear();
+            ResetReview();
             StatusText = "読み取りを中止しました。ファイルは作成していません。";
         }
         catch (Exception ex)
         {
-            _reading = null;
-            ReviewItems.Clear();
+            ResetReview();
             StatusText = $"読み取りに失敗しました: {ex.Message}";
         }
         finally
@@ -492,49 +779,115 @@ public sealed class PdfReadViewModel : ObservableObject
 
     private void CancelOcr() => _ocrCancellation?.Cancel();
 
-    /// <summary>一覧に出す行を作る。既定は「要確認だけ」。</summary>
+    /// <summary>確認の状態を捨てて、開いていた PDF も閉じる。</summary>
+    private void ResetReview()
+    {
+        _reading = null;
+        _session = null;
+        _pageImage = null;
+        _pageImageSource = null;
+        _currentPage = 0;
+        ReviewItems.Clear();
+        SelectedItem = null;
+        _imageCache?.Clear();
+        _imageCache = null;
+        CloseReviewSource();
+
+        OnPropertyChanged(nameof(PageImage));
+        OnPropertyChanged(nameof(PageImageSource));
+        OnPropertyChanged(nameof(HasPageImage));
+        OnPropertyChanged(nameof(CachedPageCount));
+        RaiseHighlight();
+    }
+
+    private void CloseReviewSource()
+    {
+        _reviewSource?.Dispose();
+        _reviewSource = null;
+        _reviewEngine?.Dispose();
+        _reviewEngine = null;
+    }
+
+    /// <summary>
+    /// 一覧に出す行を作る。既定は「人が見るべきもの」だけ。
+    ///
+    /// 絞り込みは最初の分類で行うので、確認済みにしても行は消えない
+    /// (何を確認したのかが見えなくなると、取り消しもできなくなるため)。
+    /// </summary>
     private void FillReviewItems()
     {
+        var previous = SelectedItem?.Item;
+
         ReviewItems.Clear();
-        if (_reading is null)
+        if (_session is null)
         {
+            SelectedItem = null;
+            RaiseReviewProperties();
             return;
         }
 
-        foreach (var item in _reading.Items)
+        foreach (var item in _session.Visible)
         {
-            if (ShowOnlyNeedsReview && item.IsResolved)
-            {
-                continue;
-            }
-
             ReviewItems.Add(new OcrReviewRow(item));
         }
+
+        SelectedItem = ReviewItems.FirstOrDefault(row => ReferenceEquals(row.Item, previous))
+            ?? ReviewItems.FirstOrDefault(row => !row.IsResolved)
+            ?? ReviewItems.FirstOrDefault();
 
         RaiseReviewProperties();
     }
 
-    /// <summary>選んだ 1 件を「確認済み」にする。一覧を開いただけでは確認済みにしない。</summary>
-    private void ConfirmSelected()
+    /// <summary>
+    /// 選んでいる 1 件を確認済みにして、次の未確認へ進む。
+    /// <paramref name="useEdit"/> が false なら、元の読み取りのままで確認する。
+    /// </summary>
+    private void ConfirmAndAdvance(bool useEdit)
     {
-        if (SelectedItem is null)
+        if (SelectedItem is not { } row || _session is null)
         {
             return;
         }
 
-        SelectedItem.Confirm();
+        _session.Select(row.Item);
+        _session.ConfirmSelectedAndAdvance(useEdit ? row.EditedText : null);
+        row.Refresh();
+
         AfterReviewChanged();
+        SyncSelectionFromSession();
     }
 
-    /// <summary>いま一覧に出ているものをまとめて確認済みにする。</summary>
-    private void ConfirmAllShown()
+    /// <summary>編集中の文字を元の読み取りへ戻す(確認済みにはしない)。</summary>
+    private void CancelEdit()
     {
-        foreach (var row in ReviewItems.ToList())
+        if (SelectedItem is { } row)
         {
-            row.Confirm();
+            row.ResetEdit();
+        }
+    }
+
+    private void MoveReview(bool forward)
+    {
+        if (_session is null)
+        {
+            return;
         }
 
-        AfterReviewChanged();
+        _session.Select(SelectedItem?.Item);
+        if (forward ? _session.MoveToNextUnresolved() : _session.MoveToPreviousUnresolved())
+        {
+            SyncSelectionFromSession();
+        }
+    }
+
+    private void SyncSelectionFromSession()
+    {
+        if (_session?.Selected is not { } selected)
+        {
+            return;
+        }
+
+        SelectedItem = ReviewItems.FirstOrDefault(row => ReferenceEquals(row.Item, selected));
     }
 
     private void AfterReviewChanged()
@@ -543,11 +896,6 @@ public sealed class PdfReadViewModel : ObservableObject
         {
             _preview = _planner.CompleteWithOcr(preview, _reading);
             FillPreviewRows();
-        }
-
-        if (ShowOnlyNeedsReview)
-        {
-            FillReviewItems();
         }
 
         RaisePreviewProperties();
@@ -646,9 +994,7 @@ public sealed class PdfReadViewModel : ObservableObject
         IsPreviewStale = true;
 
         // 設定が変われば読み取り直し。古い確認結果のまま作成させない。
-        _reading = null;
-        ReviewItems.Clear();
-        SelectedItem = null;
+        ResetReview();
 
         RaiseCommandStates();
         RaiseReviewProperties();
@@ -657,9 +1003,12 @@ public sealed class PdfReadViewModel : ObservableObject
     private void RaiseReviewProperties()
     {
         OnPropertyChanged(nameof(HasReading));
+        OnPropertyChanged(nameof(HasNoReading));
         OnPropertyChanged(nameof(ReviewSummaryText));
-        ConfirmAllShownCommand.RaiseCanExecuteChanged();
-        ConfirmSelectedCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(ShowAutoAccepted));
+        OnPropertyChanged(nameof(PageCount));
+        OnPropertyChanged(nameof(PageText));
+        RaiseCommandStates();
     }
 
     private void RaisePreviewProperties()
@@ -670,6 +1019,7 @@ public sealed class PdfReadViewModel : ObservableObject
         OnPropertyChanged(nameof(CanRunOcr));
         OnPropertyChanged(nameof(NeedsOcr));
         OnPropertyChanged(nameof(HasReading));
+        OnPropertyChanged(nameof(HasNoReading));
         OnPropertyChanged(nameof(ReviewSummaryText));
         OnPropertyChanged(nameof(OcrPackText));
         OnPropertyChanged(nameof(KindText));
@@ -690,8 +1040,17 @@ public sealed class PdfReadViewModel : ObservableObject
         AnalyzeCommand.RaiseCanExecuteChanged();
         RunOcrCommand.RaiseCanExecuteChanged();
         CancelOcrCommand.RaiseCanExecuteChanged();
-        ConfirmSelectedCommand.RaiseCanExecuteChanged();
-        ConfirmAllShownCommand.RaiseCanExecuteChanged();
+        ConfirmAndNextCommand.RaiseCanExecuteChanged();
+        ConfirmOriginalAndNextCommand.RaiseCanExecuteChanged();
+        CancelEditCommand.RaiseCanExecuteChanged();
+        NextReviewCommand.RaiseCanExecuteChanged();
+        PreviousReviewCommand.RaiseCanExecuteChanged();
+        PreviousPageCommand.RaiseCanExecuteChanged();
+        NextPageCommand.RaiseCanExecuteChanged();
+        ZoomInCommand.RaiseCanExecuteChanged();
+        ZoomOutCommand.RaiseCanExecuteChanged();
+        ActualSizeCommand.RaiseCanExecuteChanged();
+        FitCommand.RaiseCanExecuteChanged();
         ExecuteCommand.RaiseCanExecuteChanged();
     }
 }

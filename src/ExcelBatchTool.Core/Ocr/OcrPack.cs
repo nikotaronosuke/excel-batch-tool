@@ -37,6 +37,10 @@ public sealed record OcrPackFile
     public string Sha256 { get; init; } = string.Empty;
 }
 
+/// <summary>Pack の版がアプリと合っていないときの失敗。文言は利用者向け。</summary>
+public sealed class OcrPackMismatchException(string message, Exception? inner = null)
+    : InvalidOperationException(message, inner);
+
 /// <summary>OCR Pack が使えるかどうか。使えない理由は利用者向けの文言で持つ。</summary>
 public sealed record OcrPackStatus(bool IsPresent, bool IsUsable, string Message, string Directory)
 {
@@ -191,7 +195,13 @@ public static class OcrPack
         }
     }
 
-    /// <summary>検査を通った Pack から OCR の実体を読み込む。</summary>
+    /// <summary>
+    /// 検査を通った Pack から OCR の実体を読み込む。
+    ///
+    /// 目録の検査を通っていても、Pack の版がアプリと合っていないことはある
+    /// (アプリだけ、あるいは Pack だけを入れ替えた場合)。そのときに
+    /// .NET の内部的な文言をそのまま見せないよう、ここで利用者向けに言い換える。
+    /// </summary>
     public static IOcrEngine Load(OcrPackStatus status)
     {
         if (!status.IsUsable || status.Manifest is not { } manifest)
@@ -199,17 +209,36 @@ public static class OcrPack
             throw new InvalidOperationException(status.Message);
         }
 
-        var assemblyPath = Path.Combine(status.Directory, manifest.EngineAssembly);
-        var context = new OcrPackLoadContext(assemblyPath);
-        var assembly = context.LoadFromAssemblyPath(assemblyPath);
+        try
+        {
+            var assemblyPath = Path.Combine(status.Directory, manifest.EngineAssembly);
+            var context = new OcrPackLoadContext(assemblyPath);
+            var assembly = context.LoadFromAssemblyPath(assemblyPath);
 
-        var type = assembly.GetType(manifest.EngineType, throwOnError: false)
-            ?? throw new InvalidOperationException(
-                $"OCR Pack の中に {manifest.EngineType} が見つかりません。");
+            var type = assembly.GetType(manifest.EngineType, throwOnError: false)
+                ?? throw new OcrPackMismatchException(VersionMismatchMessage);
 
-        return Activator.CreateInstance(type) as IOcrEngine
-            ?? throw new InvalidOperationException("OCR Pack の形式が想定と違います。");
+            var engine = Activator.CreateInstance(type) as IOcrEngine
+                ?? throw new OcrPackMismatchException(VersionMismatchMessage);
+
+            // 実体が本当に呼べるかは、作った直後に一度だけ確かめる。
+            _ = engine.Info;
+            return engine;
+        }
+        catch (OcrPackMismatchException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is MissingMemberException or TypeLoadException
+            or BadImageFormatException or FileLoadException or TargetInvocationException)
+        {
+            throw new OcrPackMismatchException(VersionMismatchMessage, ex);
+        }
     }
+
+    internal const string VersionMismatchMessage =
+        "「Offline OCR Pack」の版がアプリと合っていません。"
+        + "アプリと Pack を同じ配布物のものへそろえてください。";
 
     /// <summary>
     /// Pack の中の DLL を、Pack のフォルダーから解決する。
