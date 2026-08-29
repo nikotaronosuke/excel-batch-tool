@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Offline OCR Pack の中身。製品本体(ExcelBatchTool.App)はこれを参照しない。
+    本体は ExcelBatchTool.Core の IOcrEngine だけを知っていて、実体はこの DLL を
+    ocr フォルダーから読み込む。こうすることで、
+
+      - OCR Pack が無くても本体は普通に起動し、文字情報のある PDF は読める
+      - 本体の配布サイズに OCR ランタイムが乗らない
+
+    という 2 つを同時に満たす。
+
+    Paddle Inference は 2.x に固定する。日本語専用 rec(japan_PP-OCRv4)は旧形式で、
+    3.x runtime では device を問わず実行できないことを実測している。
+    行列演算は OpenBLAS(BSD-3-Clause)。Intel MKL は再配布条件に曖昧さが残るため採らない。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <!-- CS9057: OpenCvSharp 同梱アナライザーが新しい Roslyn を要求する旨の通知。
+         生成物には影響しないため抑止する。 -->
+    <NoWarn>CA1416;CS9057</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
+    <PackageReference Include="PDFtoImage" Version="5.4.0" />
+    <PackageReference Include="Sdcb.PaddleInference" Version="2.5.0.1" />
+    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.openblas" Version="2.6.1" />
+    <PackageReference Include="Sdcb.PaddleOCR" Version="2.7.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 本体と型を共有するため、Core は Pack へコピーしない(本体側の DLL を使う)。 -->
+    <ProjectReference Include="..\ExcelBatchTool.Core\ExcelBatchTool.Core.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+</Project>

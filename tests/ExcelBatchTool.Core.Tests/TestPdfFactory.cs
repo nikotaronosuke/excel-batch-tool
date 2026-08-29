@@ -18,7 +18,7 @@ internal static class TestPdfFactory
         foreach (var name in new[] { "Yu Gothic UI", "Yu Gothic", "Meiryo", "MS Gothic" })
         {
             var face = SKTypeface.FromFamilyName(name);
-            if (face is not null && face.GetGlyph('あ') != 0)
+            if (face is not null && new SKFont(face).GetGlyph('あ') != 0)
             {
                 return face;
             }
@@ -179,11 +179,77 @@ internal static class TestPdfFactory
             using var image = SKImage.FromBitmap(bitmap);
             var canvas = document.BeginPage(PageWidth, PageHeight);
             canvas.Clear(SKColors.White);
-            canvas.DrawImage(image, new SKRect(0, 0, PageWidth, PageHeight));
+            canvas.DrawImage(
+                image, new SKRect(0, 0, PageWidth, PageHeight), new SKSamplingOptions(SKFilterMode.Linear));
             document.EndPage();
         }
 
         document.Close();
+    }
+
+    /// <summary>罫線のある表のページ + 画像だけのページ(構造を揃えられない混在)。</summary>
+    public static void CreateTableThenImage(string path, IReadOnlyList<string[]> rows)
+    {
+        var table = path + ".table.tmp.pdf";
+        CreateTable(table, [rows]);
+
+        using (var stream = File.Create(path))
+        using (var document = SKDocument.CreatePdf(stream))
+        {
+            using var face = Japanese();
+            using var font = new SKFont(face, 10);
+            using var text = new SKPaint { Color = SKColors.Black, IsAntialias = true };
+            using var line = new SKPaint
+            {
+                Color = SKColors.Black, IsStroke = true, StrokeWidth = 0.7f,
+            };
+
+            float[] columns = [60, 170, 380, 470];
+            const float right = 540;
+            const float top = 110;
+            const float rowHeight = 18;
+
+            var canvas = document.BeginPage(PageWidth, PageHeight);
+            canvas.Clear(SKColors.White);
+            for (var index = 0; index < rows.Count; index++)
+            {
+                var y = top + (index * rowHeight);
+                for (var column = 0; column < columns.Length; column++)
+                {
+                    canvas.DrawText(
+                        rows[index].ElementAtOrDefault(column) ?? string.Empty,
+                        columns[column] + 3, y + 12, SKTextAlign.Left, font, text);
+                }
+
+                canvas.DrawLine(columns[0], y, right, y, line);
+            }
+
+            var bottom = top + (rows.Count * rowHeight);
+            canvas.DrawLine(columns[0], bottom, right, bottom, line);
+            foreach (var x in columns.Append(right))
+            {
+                canvas.DrawLine(x, top, x, bottom, line);
+            }
+
+            document.EndPage();
+
+            using var bitmap = new SKBitmap((int)PageWidth, (int)PageHeight);
+            using (var bitmapCanvas = new SKCanvas(bitmap))
+            {
+                bitmapCanvas.Clear(SKColors.White);
+                bitmapCanvas.DrawText("画像のページ(架空の見本)", 60, 100, SKTextAlign.Left, font, text);
+            }
+
+            using var image = SKImage.FromBitmap(bitmap);
+            var imageCanvas = document.BeginPage(PageWidth, PageHeight);
+            imageCanvas.Clear(SKColors.White);
+            imageCanvas.DrawImage(
+                image, new SKRect(0, 0, PageWidth, PageHeight), new SKSamplingOptions(SKFilterMode.Linear));
+            document.EndPage();
+            document.Close();
+        }
+
+        File.Delete(table);
     }
 
     /// <summary>ページを 1 枚も持たない PDF。</summary>

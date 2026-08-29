@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using ExcelBatchTool.Core.CsvTransform;
 using ExcelBatchTool.Core.Merge;
+using ExcelBatchTool.Core.Ocr;
 using ExcelBatchTool.Core.Pdf;
 
 namespace ExcelBatchTool.App.ViewModels;
@@ -9,7 +10,7 @@ namespace ExcelBatchTool.App.ViewModels;
 /// <summary>プレビューに出す 1 行(文字 PDF は ページ/行/内容、表 PDF は列を連結)。</summary>
 public sealed record PdfPreviewRow(string First, string Second, string Text);
 
-/// <summary>「8. PDF を読み取る」(Phase 2F-A)の ViewModel。</summary>
+/// <summary>「8. PDF を読み取る」(Phase 2F-A / 2F-B1)の ViewModel。</summary>
 public sealed class PdfReadViewModel : ObservableObject
 {
     private const string FormatXlsx = "Excel (.xlsx)";
@@ -24,7 +25,10 @@ public sealed class PdfReadViewModel : ObservableObject
 
     private readonly PdfReadPlanner _planner = new();
     private readonly PdfReader _reader = new();
+    private readonly PdfScanReader _scanReader = new();
     private readonly Func<string?> _pickPdfFile;
+    private readonly Func<OcrPackStatus> _inspectPack;
+    private readonly Func<OcrPackStatus, IOcrEngine> _loadEngine;
 
     private string _sourceFilePath = string.Empty;
     private string _formatDisplay = FormatXlsx;
@@ -39,19 +43,35 @@ public sealed class PdfReadViewModel : ObservableObject
     private string? _resultText;
     private bool _lastRunSucceeded;
 
+    private OcrPackStatus? _packStatus;
+    private OcrDocumentReading? _reading;
+    private CancellationTokenSource? _ocrCancellation;
+    private string _progressText = string.Empty;
+    private bool _showOnlyNeedsReview = true;
+
     public PdfReadViewModel()
         : this(() => null)
     {
     }
 
-    /// <summary>テスト用: ファイル選択を差し替えられるようにする。</summary>
-    internal PdfReadViewModel(Func<string?> pickPdfFile)
+    /// <summary>テスト用: ファイル選択と OCR Pack を差し替えられるようにする。</summary>
+    internal PdfReadViewModel(
+        Func<string?> pickPdfFile,
+        Func<OcrPackStatus>? inspectPack = null,
+        Func<OcrPackStatus, IOcrEngine>? loadEngine = null)
     {
         _pickPdfFile = pickPdfFile;
+        _inspectPack = inspectPack ?? (() => OcrPack.Inspect());
+        _loadEngine = loadEngine ?? OcrPack.Load;
 
         SelectSourceCommand = new RelayCommand(SelectSource, () => !IsBusy);
         AnalyzeCommand = new RelayCommand(
             () => _ = AnalyzeAsync(), () => !IsBusy && SourceFilePath.Length > 0);
+        RunOcrCommand = new RelayCommand(() => _ = RunOcrAsync(), () => CanRunOcr);
+        CancelOcrCommand = new RelayCommand(CancelOcr, () => IsBusy && _ocrCancellation is not null);
+        ConfirmSelectedCommand = new RelayCommand(ConfirmSelected, () => SelectedItem is not null);
+        ConfirmAllShownCommand = new RelayCommand(
+            ConfirmAllShown, () => ReviewItems.Count > 0 && !IsBusy);
         ExecuteCommand = new RelayCommand(() => _ = ExecuteAsync(), () => CanExecute);
     }
 
@@ -69,7 +89,18 @@ public sealed class PdfReadViewModel : ObservableObject
 
     public RelayCommand AnalyzeCommand { get; }
 
+    public RelayCommand RunOcrCommand { get; }
+
+    public RelayCommand CancelOcrCommand { get; }
+
+    public RelayCommand ConfirmSelectedCommand { get; }
+
+    public RelayCommand ConfirmAllShownCommand { get; }
+
     public RelayCommand ExecuteCommand { get; }
+
+    /// <summary>確認・修正の一覧。「要確認だけ」に絞れる。</summary>
+    public ObservableCollection<OcrReviewRow> ReviewItems { get; } = [];
 
     public string SourceFileNameDisplay => SourceFilePath.Length == 0
         ? "(未選択)"
@@ -196,6 +227,77 @@ public sealed class PdfReadViewModel : ObservableObject
 
     public bool CanExecute => !IsBusy && HasPreview && _preview!.CanExecute;
 
+    public bool CanRunOcr => !IsBusy
+        && HasPreview
+        && _preview!.Stage == PdfReadStage.NeedsOcr
+        && _packStatus is { IsUsable: true };
+
+    /// <summary>OCR が必要な PDF か(画面の確認欄を出すかどうか)。</summary>
+    public bool NeedsOcr => _preview?.Stage == PdfReadStage.NeedsOcr;
+
+    public bool HasReading => _reading is not null;
+
+    public string ProgressText
+    {
+        get => _progressText;
+        private set
+        {
+            if (SetProperty(ref _progressText, value))
+            {
+                OnPropertyChanged(nameof(HasProgress));
+            }
+        }
+    }
+
+    public bool HasProgress => ProgressText.Length > 0;
+
+    private OcrReviewRow? _selectedItem;
+
+    public OcrReviewRow? SelectedItem
+    {
+        get => _selectedItem;
+        set
+        {
+            if (SetProperty(ref _selectedItem, value))
+            {
+                OnPropertyChanged(nameof(SelectedEngineText));
+                OnPropertyChanged(nameof(HasSelectedItem));
+                ConfirmSelectedCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool HasSelectedItem => SelectedItem is not null;
+
+    public string SelectedEngineText => SelectedItem?.EngineText ?? "-";
+
+    /// <summary>「要確認だけ」に絞る。120 ページを 1 件ずつ見せない。</summary>
+    public bool ShowOnlyNeedsReview
+    {
+        get => _showOnlyNeedsReview;
+        set
+        {
+            if (SetProperty(ref _showOnlyNeedsReview, value))
+            {
+                FillReviewItems();
+            }
+        }
+    }
+
+    public string ReviewSummaryText => _reading is null
+        ? "-"
+        : $"自動確定 {_reading.AutoAcceptedCount:N0} 件 / "
+            + $"要確認 {_reading.NeedsReviewCount:N0} 件 / "
+            + $"読取不能 {_reading.UnreadableCount:N0} 件 / "
+            + $"確認済み {_reading.UserConfirmedCount:N0} 件"
+            + (_reading.UserEditedCount > 0 ? $"(うち修正 {_reading.UserEditedCount:N0} 件)" : string.Empty);
+
+    public string OcrPackText => _packStatus is null
+        ? "-"
+        : _packStatus.IsUsable
+            ? "利用できます"
+            : _packStatus.Message;
+
     public IReadOnlyList<MergeIssue> Issues => _preview is null
         ? []
         : [.. _preview.Issues.OrderByDescending(issue => issue.Severity)];
@@ -212,6 +314,12 @@ public sealed class PdfReadViewModel : ObservableObject
             if (_preview is null)
             {
                 return "-";
+            }
+
+            if (_preview.Stage == PdfReadStage.NeedsOcr)
+            {
+                return $"{_preview.PageCount:N0} ページ / "
+                    + $"OCR が必要 {_preview.OcrPageNumbers.Count:N0} ページ";
             }
 
             var rows = _preview.Kind == PdfDocumentKind.Table
@@ -265,13 +373,27 @@ public sealed class PdfReadViewModel : ObservableObject
         StatusText = "PDF を解析しています…(元の PDF は読み取りのみ)";
         try
         {
-            _preview = await Task.Run(() => _planner.CreatePreview(request));
+            _reading = null;
+            ReviewItems.Clear();
+
+            // OCR Pack は「スキャンページがあったときだけ」必要になる。
+            // 無くてもここで失敗させない(文字情報のある PDF はそのまま読める)。
+            _packStatus = await Task.Run(SafeInspectPack);
+            var pack = _packStatus;
+
+            _preview = await Task.Run(() => _planner.CreatePreview(request, pack));
             IsPreviewStale = false;
             FillPreviewRows();
 
-            StatusText = _preview.CanExecute
-                ? "内容を確認して「ファイルを作成」を押してください。"
-                : "このままでは作成できません。下の内容を確認してください。";
+            StatusText = _preview.Stage switch
+            {
+                PdfReadStage.NeedsOcr =>
+                    $"スキャンされたページが {_preview.OcrPageNumbers.Count:N0} ページあります。"
+                        + "「OCR で読み取る」を押してください。",
+                PdfReadStage.Ready when _preview.CanExecute =>
+                    "内容を確認して「ファイルを作成」を押してください。",
+                _ => "このままでは作成できません。下の内容を確認してください。",
+            };
         }
         catch (Exception ex)
         {
@@ -283,6 +405,153 @@ public sealed class PdfReadViewModel : ObservableObject
             IsBusy = false;
             RaisePreviewProperties();
         }
+    }
+
+    /// <summary>
+    /// OCR Pack の状態を見る。壊れていても例外を投げず、理由を持った状態を返す
+    /// (native の読み込みで不可解な落ち方をさせない)。
+    /// </summary>
+    private OcrPackStatus SafeInspectPack()
+    {
+        try
+        {
+            return _inspectPack();
+        }
+        catch (Exception ex)
+        {
+            return OcrPackStatus.Broken(string.Empty, ex.Message);
+        }
+    }
+
+    /// <summary>スキャンされたページを OCR で読み取る。数分かかるので中止できる。</summary>
+    public async Task RunOcrAsync()
+    {
+        if (_preview is not { Stage: PdfReadStage.NeedsOcr } preview
+            || _packStatus is not { IsUsable: true } pack)
+        {
+            return;
+        }
+
+        var pages = preview.OcrPageNumbers;
+        var source = SourceFilePath;
+
+        _ocrCancellation = new CancellationTokenSource();
+        var token = _ocrCancellation.Token;
+
+        IsBusy = true;
+        ResultText = null;
+        ProgressText = new OcrProgress(0, pages.Count, IsProbe: true).Text;
+        StatusText = "スキャンされたページを読み取っています…(元の PDF は読み取りのみ)";
+
+        var progress = new Progress<OcrProgress>(value => ProgressText = value.Text);
+
+        try
+        {
+            var reading = await Task.Run(
+                () =>
+                {
+                    using var engine = _loadEngine(pack);
+                    return _scanReader.Read(engine, source, pages, progress, token);
+                },
+                token);
+
+            _reading = reading;
+            FillReviewItems();
+
+            _preview = _planner.CompleteWithOcr(preview, reading);
+            FillPreviewRows();
+
+            StatusText = reading.Issues.Count > 0
+                ? "このままでは作成できません。下の内容を確認してください。"
+                : reading.IsComplete
+                    ? "内容を確認して「ファイルを作成」を押してください。"
+                    : $"読み取りました。要確認 {reading.NeedsReviewCount:N0} 件 / "
+                        + $"読取不能 {reading.UnreadableCount:N0} 件を確認してください。";
+        }
+        catch (OperationCanceledException)
+        {
+            _reading = null;
+            ReviewItems.Clear();
+            StatusText = "読み取りを中止しました。ファイルは作成していません。";
+        }
+        catch (Exception ex)
+        {
+            _reading = null;
+            ReviewItems.Clear();
+            StatusText = $"読み取りに失敗しました: {ex.Message}";
+        }
+        finally
+        {
+            _ocrCancellation?.Dispose();
+            _ocrCancellation = null;
+            ProgressText = string.Empty;
+            IsBusy = false;
+            RaisePreviewProperties();
+        }
+    }
+
+    private void CancelOcr() => _ocrCancellation?.Cancel();
+
+    /// <summary>一覧に出す行を作る。既定は「要確認だけ」。</summary>
+    private void FillReviewItems()
+    {
+        ReviewItems.Clear();
+        if (_reading is null)
+        {
+            return;
+        }
+
+        foreach (var item in _reading.Items)
+        {
+            if (ShowOnlyNeedsReview && item.IsResolved)
+            {
+                continue;
+            }
+
+            ReviewItems.Add(new OcrReviewRow(item));
+        }
+
+        RaiseReviewProperties();
+    }
+
+    /// <summary>選んだ 1 件を「確認済み」にする。一覧を開いただけでは確認済みにしない。</summary>
+    private void ConfirmSelected()
+    {
+        if (SelectedItem is null)
+        {
+            return;
+        }
+
+        SelectedItem.Confirm();
+        AfterReviewChanged();
+    }
+
+    /// <summary>いま一覧に出ているものをまとめて確認済みにする。</summary>
+    private void ConfirmAllShown()
+    {
+        foreach (var row in ReviewItems.ToList())
+        {
+            row.Confirm();
+        }
+
+        AfterReviewChanged();
+    }
+
+    private void AfterReviewChanged()
+    {
+        if (_preview is { OcrReading: not null } preview && _reading is not null)
+        {
+            _preview = _planner.CompleteWithOcr(preview, _reading);
+            FillPreviewRows();
+        }
+
+        if (ShowOnlyNeedsReview)
+        {
+            FillReviewItems();
+        }
+
+        RaisePreviewProperties();
+        RaiseReviewProperties();
     }
 
     private void FillPreviewRows()
@@ -375,7 +644,22 @@ public sealed class PdfReadViewModel : ObservableObject
     {
         ResultText = null;
         IsPreviewStale = true;
+
+        // 設定が変われば読み取り直し。古い確認結果のまま作成させない。
+        _reading = null;
+        ReviewItems.Clear();
+        SelectedItem = null;
+
         RaiseCommandStates();
+        RaiseReviewProperties();
+    }
+
+    private void RaiseReviewProperties()
+    {
+        OnPropertyChanged(nameof(HasReading));
+        OnPropertyChanged(nameof(ReviewSummaryText));
+        ConfirmAllShownCommand.RaiseCanExecuteChanged();
+        ConfirmSelectedCommand.RaiseCanExecuteChanged();
     }
 
     private void RaisePreviewProperties()
@@ -383,6 +667,11 @@ public sealed class PdfReadViewModel : ObservableObject
         OnPropertyChanged(nameof(Preview));
         OnPropertyChanged(nameof(HasPreview));
         OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanRunOcr));
+        OnPropertyChanged(nameof(NeedsOcr));
+        OnPropertyChanged(nameof(HasReading));
+        OnPropertyChanged(nameof(ReviewSummaryText));
+        OnPropertyChanged(nameof(OcrPackText));
         OnPropertyChanged(nameof(KindText));
         OnPropertyChanged(nameof(SummaryText));
         OnPropertyChanged(nameof(OutputSummaryText));
@@ -399,6 +688,10 @@ public sealed class PdfReadViewModel : ObservableObject
     {
         SelectSourceCommand.RaiseCanExecuteChanged();
         AnalyzeCommand.RaiseCanExecuteChanged();
+        RunOcrCommand.RaiseCanExecuteChanged();
+        CancelOcrCommand.RaiseCanExecuteChanged();
+        ConfirmSelectedCommand.RaiseCanExecuteChanged();
+        ConfirmAllShownCommand.RaiseCanExecuteChanged();
         ExecuteCommand.RaiseCanExecuteChanged();
     }
 }

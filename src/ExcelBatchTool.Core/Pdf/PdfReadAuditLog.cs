@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.Unicode;
 using ExcelBatchTool.Core.CsvTransform;
 using ExcelBatchTool.Core.Mutation;
+using ExcelBatchTool.Core.Ocr;
 
 namespace ExcelBatchTool.Core.Pdf;
 
@@ -14,7 +15,14 @@ namespace ExcelBatchTool.Core.Pdf;
 /// </summary>
 internal static class PdfReadAuditLog
 {
+    /// <summary>文字情報だけから作った場合(Phase 2F-A と同じ内容)。</summary>
     public const int SchemaVersion = 1;
+
+    /// <summary>
+    /// OCR を通した場合。ocr の節が増えるぶん版を上げる
+    /// (「版 1 が意味すること」を後から変えない)。
+    /// </summary>
+    public const int OcrSchemaVersion = 2;
 
     public const string OperationName = "pdf-extract";
 
@@ -33,9 +41,11 @@ internal static class PdfReadAuditLog
         int rowCount,
         int columnCount)
     {
+        var reading = preview.OcrReading;
+
         var document = new AuditDocument
         {
-            SchemaVersion = SchemaVersion,
+            SchemaVersion = reading is null ? SchemaVersion : OcrSchemaVersion,
             CreatedAtUtc = DateTimeOffset.UtcNow.ToString("o"),
             Operation = OperationName,
             Source = new AuditSource
@@ -61,6 +71,23 @@ internal static class PdfReadAuditLog
                 RowCount = rowCount,
                 ColumnCount = columnCount,
             },
+            // 読み取った文字そのものは残さない。件数と、どのモデルで読んだかだけ。
+            Ocr = reading is null ? null : new AuditOcr
+            {
+                MultiModel = reading.EngineInfo.MultiModel,
+                JapanModel = reading.EngineInfo.JapanModel,
+                Runtime = reading.EngineInfo.Runtime,
+                Backend = reading.EngineInfo.Backend,
+                Dpi = reading.EngineInfo.Dpi,
+                AutoAcceptThreshold = OcrFusion.AutoAcceptThreshold,
+                OcrPageCount = reading.OcrPages.Count,
+                ItemCount = reading.Items.Count,
+                AutoAcceptedCount = reading.InitiallyAutoAcceptedCount,
+                NeedsReviewCount = reading.InitiallyNeedsReviewCount,
+                UnreadableCount = reading.InitiallyUnreadableCount,
+                UserConfirmedCount = reading.UserConfirmedCount,
+                UserEditedCount = reading.UserEditedCount,
+            },
             Warnings = [.. preview.Warnings.Select(issue => issue.Message)],
         };
 
@@ -76,14 +103,24 @@ internal static class PdfReadAuditLog
         _ => "unknown",
     };
 
-    private static string ExtractionMethod(PdfReadPreview preview) => preview.Kind switch
+    private static string ExtractionMethod(PdfReadPreview preview)
     {
-        PdfDocumentKind.Text => "pdfpig-lines",
-        PdfDocumentKind.Table => preview.TableFromRulings
-            ? "ruling-grid+pdfpig-letters"
-            : "header-guided+pdfpig-letters",
-        _ => "none",
-    };
+        if (preview.OcrReading is not null)
+        {
+            return preview.PagePlans.Any(plan => plan.Route == PdfPageRoute.BornDigitalText)
+                ? "ocr-dual-read+pdfpig-lines"
+                : "ocr-dual-read";
+        }
+
+        return preview.Kind switch
+        {
+            PdfDocumentKind.Text => "pdfpig-lines",
+            PdfDocumentKind.Table => preview.TableFromRulings
+                ? "ruling-grid+pdfpig-letters"
+                : "header-guided+pdfpig-letters",
+            _ => "none",
+        };
+    }
 
     private static string CsvEncodingName(CsvOutputEncoding encoding) => encoding switch
     {
@@ -104,7 +141,40 @@ internal static class PdfReadAuditLog
 
         public AuditOutput Output { get; init; } = new();
 
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public AuditOcr? Ocr { get; init; }
+
         public IReadOnlyList<string> Warnings { get; init; } = [];
+    }
+
+    /// <summary>OCR を通した場合だけ書く。読み取った文字そのものは入れない。</summary>
+    internal sealed class AuditOcr
+    {
+        public string MultiModel { get; init; } = string.Empty;
+
+        public string JapanModel { get; init; } = string.Empty;
+
+        public string Runtime { get; init; } = string.Empty;
+
+        public string Backend { get; init; } = string.Empty;
+
+        public int Dpi { get; init; }
+
+        public double AutoAcceptThreshold { get; init; }
+
+        public int OcrPageCount { get; init; }
+
+        public int ItemCount { get; init; }
+
+        public int AutoAcceptedCount { get; init; }
+
+        public int NeedsReviewCount { get; init; }
+
+        public int UnreadableCount { get; init; }
+
+        public int UserConfirmedCount { get; init; }
+
+        public int UserEditedCount { get; init; }
     }
 
     internal sealed class AuditSource
