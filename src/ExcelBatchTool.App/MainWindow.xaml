@@ -2213,6 +2213,207 @@
             </DockPanel>
         </TabItem>
 
+        <TabItem Header="8. PDF を読み取る">
+            <Grid Margin="0,12,0,0" DataContext="{Binding PdfRead}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="8*" MinWidth="380" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="10*" MinWidth="400" />
+                </Grid.ColumnDefinitions>
+
+                <!-- PDF の選択と出力の指定 -->
+                <Border Grid.Column="0" Background="#FFFFFF" BorderBrush="#D8DCE3"
+                        BorderThickness="1" CornerRadius="4">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="PDF からデータを取り出す"
+                                   FontSize="13" FontWeight="SemiBold" Foreground="#3B4252"
+                                   Margin="12,10,12,2" />
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap"
+                                   Text="文字情報を持つ PDF から、文章や表を取り出して Excel / CSV にします。元の PDF は変更しません。見た目をそのまま再現するものではありません。"
+                                   FontSize="11" Foreground="#8A8F98" Margin="12,0,12,8" />
+
+                        <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="#E2E5EA"
+                                BorderThickness="0,1,0,0" Padding="12,10">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" MinWidth="90" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" MinWidth="90" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="出力形式" FontSize="12"
+                                               Foreground="#5B6472" VerticalAlignment="Center"
+                                               Margin="0,0,6,0" />
+                                    <ComboBox Grid.Column="1" Height="24" FontSize="12"
+                                              VerticalContentAlignment="Center"
+                                              ItemsSource="{x:Static vm:PdfReadViewModel.FormatOptions}"
+                                              SelectedItem="{Binding FormatDisplay, Mode=TwoWay}" />
+                                    <TextBlock Grid.Column="2" Text="出力名" FontSize="12"
+                                               Foreground="#5B6472" VerticalAlignment="Center"
+                                               Margin="12,0,6,0" />
+                                    <TextBox Grid.Column="3" Height="24" FontSize="12"
+                                             VerticalContentAlignment="Center"
+                                             ToolTip="元のファイル名の後ろに付ける文字"
+                                             Text="{Binding OutputSuffix, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+
+                                <!-- CSV を選んだときだけ出す -->
+                                <Grid Margin="0,6,0,0"
+                                      Visibility="{Binding IsCsv, Converter={StaticResource BoolToVis}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" MinWidth="80" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" MinWidth="70" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="文字コード" FontSize="12"
+                                               Foreground="#5B6472" VerticalAlignment="Center"
+                                               Margin="0,0,6,0" />
+                                    <ComboBox Grid.Column="1" Height="24" FontSize="12"
+                                              VerticalContentAlignment="Center"
+                                              ItemsSource="{x:Static vm:PdfReadViewModel.EncodingOptions}"
+                                              SelectedItem="{Binding EncodingDisplay, Mode=TwoWay}" />
+                                    <TextBlock Grid.Column="2" Text="引用符" FontSize="12"
+                                               Foreground="#5B6472" VerticalAlignment="Center"
+                                               Margin="12,0,6,0" />
+                                    <ComboBox Grid.Column="3" Height="24" FontSize="12"
+                                              VerticalContentAlignment="Center"
+                                              ItemsSource="{x:Static vm:PdfReadViewModel.QuoteOptions}"
+                                              SelectedItem="{Binding QuoteDisplay, Mode=TwoWay}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <StackPanel Margin="12,0,12,10">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Button Grid.Column="0" Content="PDF を選ぶ" Padding="10,4" FontSize="12"
+                                        Command="{Binding SelectSourceCommand}" />
+                                <TextBlock Grid.Column="1" Text="{Binding SourceFileNameDisplay}"
+                                           FontSize="12" Foreground="#3B4252"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center" Margin="8,0,8,0" />
+                                <Button Grid.Column="2" Content="PDF を解析" Padding="10,4" FontSize="12"
+                                        Command="{Binding AnalyzeCommand}" />
+                            </Grid>
+
+                            <Border Background="#F7F8FA" BorderBrush="#E2E5EA" BorderThickness="1"
+                                    CornerRadius="4" Padding="10,8" Margin="0,10,0,0"
+                                    Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="判定" FontSize="11"
+                                                   Foreground="#8A8F98" Margin="0,0,10,0" />
+                                        <TextBlock Grid.Column="1" Text="{Binding KindText}" FontSize="12"
+                                                   FontWeight="SemiBold" Foreground="#3B4252"
+                                                   TextWrapping="Wrap" />
+                                    </Grid>
+                                    <TextBlock Text="{Binding SummaryText}" FontSize="11"
+                                               Foreground="#5B6472" Margin="0,6,0,0" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding OutputSummaryText}" FontSize="11"
+                                               Foreground="#5B6472" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding IssueSummaryText}" FontSize="11"
+                                               Foreground="#5B6472" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+
+                            <ItemsControl ItemsSource="{Binding Issues}" Margin="0,10,0,0"
+                                          Visibility="{Binding HasIssues, Converter={StaticResource BoolToVis}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,0,0,4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="{Binding Glyph}"
+                                                       Style="{StaticResource MergeIssueGlyphText}"
+                                                       Margin="0,0,6,0" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Message}"
+                                                       FontSize="11" Foreground="#3B4252"
+                                                       TextWrapping="Wrap" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
+
+                <!-- プレビューと作成 -->
+                <Border Grid.Column="2" Background="#FFFFFF" BorderBrush="#D8DCE3"
+                        BorderThickness="1" CornerRadius="4">
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="取り出した内容"
+                                   FontSize="13" FontWeight="SemiBold" Foreground="#3B4252"
+                                   Margin="12,10,12,2" />
+                        <TextBlock DockPanel.Dock="Top" Text="{Binding StatusText}" TextWrapping="Wrap"
+                                   FontSize="11" Foreground="#8A8F98" Margin="12,0,12,8" />
+
+                        <Border DockPanel.Dock="Bottom" Background="#F7F8FA" BorderBrush="#E2E5EA"
+                                BorderThickness="0,1,0,0" Padding="12,10">
+                            <StackPanel>
+                                <Button Content="ファイルを作成" Style="{StaticResource ActionButton}"
+                                        HorizontalAlignment="Left"
+                                        Command="{Binding ExecuteCommand}" />
+                                <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="#8A8F98"
+                                           Margin="0,6,0,0"
+                                           Text="元の PDF と同じフォルダーに、新しいファイルを作ります。元の PDF・既存ファイルは変更しません。" />
+                                <TextBlock Text="{Binding ResultText}" TextWrapping="Wrap" FontSize="11"
+                                           Margin="0,6,0,0"
+                                           Visibility="{Binding HasResult, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Foreground" Value="#C0392B" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding LastRunSucceeded}" Value="True">
+                                                    <Setter Property="Foreground" Value="#1F8A4C" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+
+                        <DataGrid ItemsSource="{Binding PreviewRows}" Margin="12,0,12,10"
+                                  AutoGenerateColumns="False" CanUserAddRows="False"
+                                  CanUserDeleteRows="False" CanUserResizeRows="False"
+                                  CanUserSortColumns="False" IsReadOnly="True"
+                                  HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                                  HorizontalGridLinesBrush="#E9EBEF" BorderBrush="#D8DCE3"
+                                  Background="White" RowBackground="White" RowHeight="24"
+                                  FontSize="11" SelectionMode="Single"
+                                  EnableRowVirtualization="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  ScrollViewer.CanContentScroll="True">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="{Binding DataContext.FirstColumnHeader,
+                                                        RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    Width="64" Binding="{Binding First}" />
+                                <DataGridTextColumn Header="{Binding DataContext.SecondColumnHeader,
+                                                        RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    Width="64" Binding="{Binding Second}" />
+                                <DataGridTextColumn Header="{Binding DataContext.TextColumnHeader,
+                                                        RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                    Width="*" Binding="{Binding Text}" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </DockPanel>
+                </Border>
+            </Grid>
+        </TabItem>
+
         </TabControl>
     </DockPanel>
 </Window>

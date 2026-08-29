@@ -26,7 +26,8 @@ public sealed class MainViewModel : ObservableObject
         Func<string[]?> pickFiles,
         Func<string, string?> pickSavePath,
         Func<string?> pickSourceFile,
-        RecipeStore? recipeStore = null)
+        RecipeStore? recipeStore = null,
+        Func<string?>? pickPdfFile = null)
     {
         _pickFiles = pickFiles;
 
@@ -39,6 +40,7 @@ public sealed class MainViewModel : ObservableObject
         Mapping = new SourceMappingViewModel(pickSourceFile, recipes);
         TableUpdate = new TableUpdateViewModel(pickSourceFile, recipes);
         CsvTransform = new CsvTransformViewModel(pickSourceFile, recipes);
+        PdfRead = new PdfReadViewModel(pickPdfFile ?? (() => null));
         SelectFilesCommand = new RelayCommand(SelectFiles, () => !IsAnalyzing);
         ClearCommand = new RelayCommand(Clear, () => !IsAnalyzing && Files.Count > 0);
 
@@ -67,6 +69,9 @@ public sealed class MainViewModel : ObservableObject
 
     /// <summary>「CSV を変換」(Phase 2E)の状態。</summary>
     public CsvTransformViewModel CsvTransform { get; }
+
+    /// <summary>「PDF を読み取る」(Phase 2F-A)の状態。</summary>
+    public PdfReadViewModel PdfRead { get; }
 
     public RelayCommand SelectFilesCommand { get; }
 
