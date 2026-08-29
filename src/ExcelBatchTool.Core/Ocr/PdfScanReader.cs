@@ -271,6 +271,15 @@ public sealed class PdfScanReader
 
         var items = new List<OcrItem>();
 
+        // 列ごとの多数派の形。上下逆に読まれたセルは、両モデルが一致していても
+        // 同じ列の他の行と文字の種類が食い違うので、そこで気づける。
+        var majority = new Dictionary<int, ColumnShapeGuard.Shape>();
+        foreach (var column in table.Cells.GroupBy(cell => cell.Column))
+        {
+            majority[column.Key] = ColumnShapeGuard.MajorityShape(
+                column.Where(cell => !cell.IsEmpty).Select(cell => cell.Text));
+        }
+
         foreach (var cell in table.Cells.OrderBy(cell => cell.Row).ThenBy(cell => cell.Column))
         {
             // このセルを組み立てた読み取り(確認画面でモデルごとの読みを見せる)。
@@ -278,10 +287,14 @@ public sealed class PdfScanReader
                 .Where(line => FormFieldExtractor.Overlap(line.Box, cell.Box) > 0.5)
                 .ToList();
 
+            var shapeOk = ColumnShapeGuard.CanAutoAccept(
+                majority.GetValueOrDefault(cell.Column), cell.Text);
+
             var status = cell.IsEmpty
                 ? OcrItemStatus.Unreadable
                 : cell.Confidence >= OcrFusion.AutoAcceptThreshold
                     && sources.All(line => Agree(line))
+                    && shapeOk
                         ? OcrItemStatus.AutoAccepted
                         : OcrItemStatus.NeedsReview;
 
@@ -297,8 +310,10 @@ public sealed class PdfScanReader
                 Confidence = cell.Confidence,
                 Reason = cell.IsEmpty
                     ? "このセルからは何も読み取れませんでした"
-                    : $"{table.RowCount} 行 × {table.ColumnCount} 列の表の "
-                        + $"{cell.Row + 1} 行 {cell.Column + 1} 列目",
+                    : !shapeOk
+                        ? ColumnShapeGuard.Reason
+                        : $"{table.RowCount} 行 × {table.ColumnCount} 列の表の "
+                            + $"{cell.Row + 1} 行 {cell.Column + 1} 列目",
                 OriginalEngineResults = sources.Count == 0
                     ? [new OcrEngineReading(OcrFusion.MultiEngineName, string.Empty, 0)]
                     : [.. sources.SelectMany(EngineReadings)],
@@ -375,11 +390,21 @@ public sealed class PdfScanReader
                 continue;
             }
 
+            // 自信が足りていても、項目の種類として形が怪しければ自動確定しない。
+            // 2 つのモデルは同じ字形の取り違えを共有するので、一致は根拠にならない。
+            var shapeOk = FieldAutoAcceptPolicy.CanAutoAccept(field.Kind, reading.Text);
+
             var status = !reading.WasFound
                 ? OcrItemStatus.Missing
-                : reading.Confidence >= OcrFusion.AutoAcceptThreshold
+                : reading.Confidence >= OcrFusion.AutoAcceptThreshold && shapeOk
                     ? OcrItemStatus.AutoAccepted
                     : OcrItemStatus.NeedsReview;
+
+            var reason = reading.WasFound
+                && !shapeOk
+                && reading.Confidence >= OcrFusion.AutoAcceptThreshold
+                ? FieldAutoAcceptPolicy.ReasonFor(field.Kind)
+                : reading.Reason;
 
             items.Add(new OcrItem
             {
@@ -391,7 +416,7 @@ public sealed class PdfScanReader
                 Text = reading.Text,
                 BoundingBox = place,
                 Confidence = reading.Confidence,
-                Reason = reading.Reason,
+                Reason = reason,
                 OriginalEngineResults =
                     [new OcrEngineReading(OcrFusion.MultiEngineName, reading.Text, reading.Confidence)],
                 InitialStatus = status,

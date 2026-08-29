@@ -2577,6 +2577,13 @@
                                                        FontSize="11" Foreground="#8A8F98"
                                                        TextTrimming="CharacterEllipsis" />
                                         </Grid>
+
+                                        <!-- なぜ確認が要るのか。自信が高くても形が怪しいときはここに出る。 -->
+                                        <TextBlock Text="{Binding SelectedReasonText}" FontSize="11"
+                                                   Foreground="#8A5A00" TextWrapping="Wrap" Margin="0,4,0,0"
+                                                   Visibility="{Binding HasSelectedReason,
+                                                       Converter={StaticResource BoolToVis}}" />
+
                                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                                             <Button Content="修正して確認 &#x2192; 次へ" Padding="10,4" FontSize="11"
                                                     Command="{Binding ConfirmAndNextCommand}" />

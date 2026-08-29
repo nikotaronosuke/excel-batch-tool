@@ -332,6 +332,8 @@ public sealed class PdfReadViewModel : ObservableObject
             OnPropertyChanged(nameof(SelectedEngineText));
             OnPropertyChanged(nameof(HasSelectedItem));
             OnPropertyChanged(nameof(SelectedPositionText));
+            OnPropertyChanged(nameof(SelectedReasonText));
+            OnPropertyChanged(nameof(HasSelectedReason));
             RaiseHighlight();
             RaiseCommandStates();
         }
@@ -346,6 +348,15 @@ public sealed class PdfReadViewModel : ObservableObject
     public string SelectedPositionText => SelectedItem is null
         ? "-"
         : $"{SelectedItem.PageNumber} ページ {SelectedItem.LineNumber} 行目";
+
+    /// <summary>
+    /// なぜ確認が要るのか。自信が高くても形が怪しくて自動確定を見送ったときは、
+    /// その理由をここに出す。理由が分からないまま「元のままで確認」を押されると、
+    /// 確認の意味が無くなるため。
+    /// </summary>
+    public string SelectedReasonText => SelectedItem?.ReasonText ?? string.Empty;
+
+    public bool HasSelectedReason => !string.IsNullOrWhiteSpace(SelectedReasonText);
 
     /// <summary>
     /// 自動確定も一覧に出すか。既定は出さない。
