@@ -1,14 +1,5 @@
 namespace ExcelBatchTool.Core.Ocr;
 
-/// <summary>
-/// 確認用に描いた 1 ページの画像。
-///
-/// OCR は 300dpi で読むが、画面に出すのはもっと粗くてよい。
-/// <see cref="ScaleFromOcr"/> は「OCR の座標 → この画像の座標」の倍率で、
-/// 読み取り位置の枠を画像の上へ重ねるときに使う。
-/// </summary>
-public sealed record OcrPageImage(int Page, byte[] Png, int Width, int Height, double ScaleFromOcr);
-
 /// <summary>画面に置く矩形(左上からの位置と大きさ)。</summary>
 public readonly record struct OcrDisplayRect(double Left, double Top, double Width, double Height);
 

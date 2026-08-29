@@ -14,6 +14,9 @@ public enum OcrItemStatus
     /// <summary>読取不能。文字として読めていない。人が入れるまで出力できない。</summary>
     Unreadable,
 
+    /// <summary>読む場所は分かっているのに、そこから何も読み取れなかった。</summary>
+    Missing,
+
     /// <summary>人が確認した(修正した / 元のままで正しいと確認した)。</summary>
     UserConfirmed,
 }
@@ -25,6 +28,7 @@ public static class OcrItemStatusText
         OcrItemStatus.AutoAccepted => "自動確定",
         OcrItemStatus.NeedsReview => "要確認",
         OcrItemStatus.Unreadable => "読取不能",
+        OcrItemStatus.Missing => "見つからない",
         OcrItemStatus.UserConfirmed => "確認済み",
         _ => string.Empty,
     };
@@ -48,6 +52,20 @@ public sealed class OcrItem
 
     /// <summary>同じ行の中での位置(左から)。</summary>
     public required int IndexInLine { get; init; }
+
+    /// <summary>帳票として読んだときの項目名。文章・表のときは null。</summary>
+    public string? FieldName { get; init; }
+
+    /// <summary>表として読んだときのセル位置。文章・帳票のときは null。</summary>
+    public int? Row { get; init; }
+
+    public int? Column { get; init; }
+
+    /// <summary>
+    /// この項目を読む場所は分かっていたのに、読み取りが 1 つも見つからなかった。
+    /// 「項目ごと消える」のを防ぐために、見つからなくても必ず 1 件残す。
+    /// </summary>
+    public bool IsMissing { get; init; }
 
     /// <summary>統合後の読み取り結果(修正前)。</summary>
     public required string Text { get; init; }
@@ -108,8 +126,17 @@ public sealed class OcrDocumentReading
     /// <summary>傾きが大きく、この段階では確定させないページ。</summary>
     public IReadOnlyList<int> NeedsDeskewPages { get; init; } = [];
 
-    /// <summary>表らしいスキャンのページ(表としての読み取りは次の段階)。</summary>
+    /// <summary>表として読んだページ。</summary>
     public IReadOnlyList<int> TableLikePages { get; init; } = [];
+
+    /// <summary>帳票として読んだページ。</summary>
+    public IReadOnlyList<int> FormPages { get; init; } = [];
+
+    /// <summary>どう組み立てたか(出力の形が変わる)。</summary>
+    public OcrReadMode ResolvedMode { get; init; } = OcrReadMode.Lines;
+
+    /// <summary>帳票として読んだときの項目名(出力の列になる)。</summary>
+    public IReadOnlyList<string> FieldNames { get; init; } = [];
 
     /// <summary>この段階では扱えないと分かった理由。1 件でもあれば出力できない。</summary>
     public IReadOnlyList<Merge.MergeIssue> Issues { get; init; } = [];
@@ -119,6 +146,11 @@ public sealed class OcrDocumentReading
     public int NeedsReviewCount => Items.Count(item => item.Status == OcrItemStatus.NeedsReview);
 
     public int UnreadableCount => Items.Count(item => item.Status == OcrItemStatus.Unreadable);
+
+    public int MissingCount => Items.Count(item => item.Status == OcrItemStatus.Missing);
+
+    public int InitiallyMissingCount
+        => Items.Count(item => item.InitialStatus == OcrItemStatus.Missing);
 
     public int UserConfirmedCount => Items.Count(item => item.Status == OcrItemStatus.UserConfirmed);
 
