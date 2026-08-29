@@ -107,6 +107,28 @@ public sealed class PdfReadPlanner
             return WithKind(scan, issues, sourceFileName, request, plans);
         }
 
+        // OCR に回すページ数の上限。無制限に走らせない。
+        if (scanPages.Count > PdfReadDefaults.MaxOcrPages)
+        {
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Block,
+                $"OCR が必要なページが {scanPages.Count:N0} ページあります。"
+                    + $"一度に読み取れるのは {PdfReadDefaults.MaxOcrPages:N0} ページまでです。"
+                    + "PDF を分けてから読み取ってください。"));
+            return WithKind(scan, issues, sourceFileName, request, plans);
+        }
+
+        // 時間がかかることは先に知らせる(止めはしない)。
+        if (scanPages.Count > PdfReadDefaults.SlowOcrPageWarning)
+        {
+            var minutes = scanPages.Count * PdfReadDefaults.OcrSecondsPerPage / 60;
+            issues.Add(new MergeIssue(
+                MergeIssueSeverity.Warning,
+                $"OCR が必要なページが {scanPages.Count:N0} ページあります。"
+                    + $"読み取りにおよそ {minutes:F0} 分かかる見込みです。"
+                    + "途中で中止できます。"));
+        }
+
         // 表のページとスキャンのページが混ざると、行と列の意味が揃わない。
         // 無理に 1 つの表へまとめず、この段階では扱わない。
         if (plans.Any(plan => plan.Route == PdfPageRoute.BornDigitalTable))

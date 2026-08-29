@@ -124,6 +124,7 @@ public sealed class PdfScanReader
         var tables = new List<int>();
         var forms = new List<int>();
         var tiltedTables = new List<int>();
+        var formPages = new List<FormPageReading>();
         var done = 0;
 
         progress?.Report(new OcrProgress(0, pages.Count));
@@ -132,9 +133,14 @@ public sealed class PdfScanReader
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            // 回す向きは実測で決めた。傾き 1.98 度と測ったページを -1.98 度回すと
+            // 罫線が 1 本も拾えず(rows=0)、+1.98 度回すと 22 行 3 列の格子が
+            // そのまま出てきた。**符号を逆にしていたので、傾きを直すつもりで
+            // 倍にしていた**(2F-B2 の「傾いた表 4.8%」「帳票 傾き 50.8%」は
+            // これが原因)。
             var angle = options.Deskew
                 && DeskewPolicy.ShouldDeskew(probe.SkewDegrees, probe.SkewReliable)
-                    ? -probe.SkewDegrees
+                    ? probe.SkewDegrees
                     : 0;
 
             if (angle != 0)
@@ -145,39 +151,38 @@ public sealed class PdfScanReader
             var read = source.Read(probe.Page, angle, cancellationToken);
             var kind = Decide(options, probe, read);
 
-            // 傾いていた表は、まだ実用にならない。罫線の位置がわずかな残り傾き
-            // (推定の誤差は平均 0.33 度)でずれ、行と列が崩れる。実測では
-            // まっすぐな罫線表のセル一致 61.3% に対し、2 度傾いた表は 4.8% で、
-            // 誤確定も 8 件出た。崩れた表をそれらしく出すより、理由を示して止める。
-            //
-            // 罫線の有無では分けない。傾いた罫線表は罫線そのものも拾えなくなり、
-            // 「罫線なしの表」として同じように崩れるため。
-            //
-            // 「傾きを測れなかった表」も同じ扱いにする。表には文字が十分にあるので、
-            // 本来は角度を測れる。測れないのは行が斜めに走って塊が繋がってしまうとき、
-            // つまり傾いているときだった(実測: まっすぐな表は測れて、
-            // 2 度傾いた表は測れず、罫線も 1 本も拾えなかった)。
-            if (kind is ScanPageKind.RuledTable or ScanPageKind.BorderlessTable
-                && (angle != 0 || !probe.SkewReliable))
-            {
-                tiltedTables.Add(probe.Page);
-                done++;
-                progress?.Report(new OcrProgress(done, pages.Count));
-                continue;
-            }
-
             switch (kind)
             {
+                // 傾いた表も、傾きを直したうえで行と列へ戻すところまで通す
+                // (Phase 2F-B2 では止めていた。当時はまっすぐな表でもセル一致
+                //  61.3% しか無く、傾けると 4.8% まで落ちたため。
+                //  Paddle Inference を 3.3.1 へ上げてまっすぐが 94.3% になったので
+                //  測り直した)。
+                //
+                // 戻せたかどうかは、出来上がった表の形で判断する。
+                // 崩れているとき(セルがほとんど空、行や列が少なすぎる)は、
+                // それらしい表を出さずに理由を示して止める。
                 case ScanPageKind.RuledTable or ScanPageKind.BorderlessTable:
+                {
+                    var built = BuildTableItems(source, read, kind, angle, cancellationToken);
+                    if (built is null)
+                    {
+                        tiltedTables.Add(probe.Page);
+                        break;
+                    }
+
                     tables.Add(probe.Page);
-                    items.AddRange(BuildTableItems(read, kind));
+                    items.AddRange(built);
                     break;
+                }
 
                 // 項目がまだ決まっていないときは、ふつうに文章として読む。
                 // その読み取り結果から項目の候補を作れるようにするため。
                 case ScanPageKind.FixedForm when options.Template is { Fields.Count: > 0 } template:
+                    // 項目ごとの「その項目らしい形」を全ページから学んでから状態を決めるので、
+                    // ここでは読み取りだけ貯めて、items はページを読み終えてから作る。
                     forms.Add(probe.Page);
-                    items.AddRange(BuildFormItems(source, read, template, cancellationToken));
+                    formPages.Add(ReadFormPage(source, read, template, cancellationToken));
                     break;
 
                 default:
@@ -189,12 +194,29 @@ public sealed class PdfScanReader
             progress?.Report(new OcrProgress(done, pages.Count));
         }
 
+        if (formPages.Count > 0 && options.Template is { Fields.Count: > 0 } formTemplate)
+        {
+            items.AddRange(BuildFormItems(formPages, formTemplate));
+            items.Sort((left, right) =>
+            {
+                var byPage = left.PageNumber.CompareTo(right.PageNumber);
+                if (byPage != 0)
+                {
+                    return byPage;
+                }
+
+                var byLine = left.LineNumber.CompareTo(right.LineNumber);
+                return byLine != 0 ? byLine : left.IndexInLine.CompareTo(right.IndexInLine);
+            });
+        }
+
         if (tiltedTables.Count > 0)
         {
             issues.Add(new MergeIssue(
                 MergeIssueSeverity.Block,
-                $"傾いた表があります({Describe(tiltedTables)})。"
-                    + "傾いた表を行と列へ戻すのは次の段階で対応します。"
+                $"表の行と列を戻せないページがあります({Describe(tiltedTables)})。"
+                    + "傾きが大きい、罫線が読み取れない、"
+                    + "などの理由で表の形が定まりませんでした。"
                     + "崩れた表を出すことはしません。"));
         }
 
@@ -256,7 +278,78 @@ public sealed class PdfScanReader
     }
 
     /// <summary>表として組み立てる。座標は元のページへ戻してから項目にする。</summary>
-    private static IReadOnlyList<OcrItem> BuildTableItems(OcrPageRead read, ScanPageKind kind)
+    /// <summary>
+    /// 戻した表が使いものになっていないか。
+    ///
+    /// 傾きを直しきれないと、罫線の位置が少しずつずれて区画が噛み合わなくなり、
+    /// 「行と列はあるのに、ほとんどのセルが空」という形になる。
+    /// この形のまま出すと、表として正しそうに見えて中身が抜け落ちる。
+    /// 中身が入っているセルが半分に満たなければ、表として扱わない。
+    /// </summary>
+    /// <summary>この割合を超える黒い画素があれば、その区画には文字があったとみなす。</summary>
+    internal const double BlankCellInkRatio = 0.01;
+
+    /// <summary>
+    /// 罫線から作った格子のうち、読み取りが 1 つも割り当たらなかった区画。
+    /// 位置は格子から作るので、読めていなくても確認画面で場所を示せる。
+    /// </summary>
+    internal static IReadOnlyList<(int Row, int Column, OcrBox Box)> BlankCells(ScanTable table)
+    {
+        var taken = table.Cells
+            .Where(cell => !cell.IsEmpty)
+            .Select(cell => (cell.Row, cell.Column))
+            .ToHashSet();
+
+        var byRow = table.Cells.GroupBy(cell => cell.Row)
+            .ToDictionary(group => group.Key, group => ScanTableBuilder.Union([.. group.Select(c => c.Box)]));
+        var byColumn = table.Cells.GroupBy(cell => cell.Column)
+            .ToDictionary(group => group.Key, group => ScanTableBuilder.Union([.. group.Select(c => c.Box)]));
+
+        var blanks = new List<(int, int, OcrBox)>();
+        for (var row = 0; row < table.RowCount; row++)
+        {
+            if (!byRow.TryGetValue(row, out var rowBox))
+            {
+                continue;
+            }
+
+            for (var column = 0; column < table.ColumnCount; column++)
+            {
+                if (taken.Contains((row, column))
+                    || !byColumn.TryGetValue(column, out var columnBox))
+                {
+                    continue;
+                }
+
+                blanks.Add((row, column,
+                    new OcrBox(columnBox.X, rowBox.Y, columnBox.Width, rowBox.Height)));
+            }
+        }
+
+        return blanks;
+    }
+
+    internal static bool IsBrokenTable(ScanTable table)
+    {
+        var grid = table.RowCount * table.ColumnCount;
+        if (grid == 0)
+        {
+            return true;
+        }
+
+        var filled = table.Cells.Count(cell => !cell.IsEmpty);
+        return (double)filled / grid < BrokenTableFilledRatio;
+    }
+
+    /// <summary>中身のあるセルがこの割合に満たなければ、表として扱わない。</summary>
+    internal const double BrokenTableFilledRatio = 0.5;
+
+    private static IReadOnlyList<OcrItem>? BuildTableItems(
+        IOcrPageSource source,
+        OcrPageRead read,
+        ScanPageKind kind,
+        double angle,
+        CancellationToken cancellationToken)
     {
         var table = kind == ScanPageKind.RuledTable
             ? ScanTableBuilder.FromRulings(
@@ -267,6 +360,11 @@ public sealed class PdfScanReader
         if (table is null)
         {
             return BuildItems(read.Page, Original(read));
+        }
+
+        if (IsBrokenTable(table))
+        {
+            return null;
         }
 
         var items = new List<OcrItem>();
@@ -280,6 +378,49 @@ public sealed class PdfScanReader
                 column.Where(cell => !cell.IsEmpty).Select(cell => cell.Text));
         }
 
+        // 文字が 1 つも割り当たらなかった区画を拾う。
+        //
+        // ここを飛ばすと、**元の表には文字があるのに検出されなかったセル**が
+        // 黙って空欄として出てしまう(Phase 2F の最重要不変条件に反する)。
+        // かといって空欄をすべて人へ回すと、もともと空のセルが多い表で
+        // 確認の手間が現実的でなくなる。
+        //
+        // そこで、その区画に**黒い画素があるか**を測って分ける。
+        // 文字があるのに読めなかった区画だけを「読取不能」として人へ回し、
+        // もともと空の区画はそのまま空欄として出す。
+        var blanks = BlankCells(table);
+        var inked = blanks.Count == 0
+            ? []
+            : source.InkRatios(read.Page, [.. blanks.Select(b => b.Box)], angle, cancellationToken);
+
+        for (var index = 0; index < blanks.Count; index++)
+        {
+            var ratio = index < inked.Count ? inked[index] : 0;
+            if (ratio < BlankCellInkRatio)
+            {
+                continue;
+            }
+
+            var blank = blanks[index];
+            items.Add(new OcrItem
+            {
+                PageNumber = read.Page,
+                LineNumber = blank.Row + 1,
+                IndexInLine = blank.Column,
+                Row = blank.Row,
+                Column = blank.Column,
+                Text = string.Empty,
+                BoundingBox = read.Transform.ToOriginal(blank.Box),
+                Confidence = 0,
+                Reason = "このセルには文字があるようですが、読み取れませんでした。"
+                    + "元のページと見比べて入力してください。",
+                OriginalEngineResults =
+                    [new OcrEngineReading(OcrFusion.MultiEngineName, string.Empty, 0)],
+                InitialStatus = OcrItemStatus.Unreadable,
+                Status = OcrItemStatus.Unreadable,
+            });
+        }
+
         foreach (var cell in table.Cells.OrderBy(cell => cell.Row).ThenBy(cell => cell.Column))
         {
             // このセルを組み立てた読み取り(確認画面でモデルごとの読みを見せる)。
@@ -288,13 +429,15 @@ public sealed class PdfScanReader
                 .ToList();
 
             var shapeOk = ColumnShapeGuard.CanAutoAccept(
-                majority.GetValueOrDefault(cell.Column), cell.Text);
+                majority.GetValueOrDefault(cell.Column), cell.Text)
+                && !FieldAutoAcceptPolicy.IsUpsideDownAmbiguous(cell.Text);
 
             var status = cell.IsEmpty
                 ? OcrItemStatus.Unreadable
                 : cell.Confidence >= OcrFusion.AutoAcceptThreshold
                     && sources.All(line => Agree(line))
                     && shapeOk
+                    && !cell.IsMerged
                         ? OcrItemStatus.AutoAccepted
                         : OcrItemStatus.NeedsReview;
 
@@ -310,10 +453,16 @@ public sealed class PdfScanReader
                 Confidence = cell.Confidence,
                 Reason = cell.IsEmpty
                     ? "このセルからは何も読み取れませんでした"
-                    : !shapeOk
-                        ? ColumnShapeGuard.Reason
-                        : $"{table.RowCount} 行 × {table.ColumnCount} 列の表の "
-                            + $"{cell.Row + 1} 行 {cell.Column + 1} 列目",
+                    : cell.IsMerged
+                        ? "縦に離れた 2 か所を 1 つのセルにまとめています。"
+                            + "行の区切りを取り違えている可能性があります。"
+                            + "元のページと見比べてください。"
+                        : FieldAutoAcceptPolicy.IsUpsideDownAmbiguous(cell.Text)
+                            ? FieldAutoAcceptPolicy.UpsideDownReason
+                        : !shapeOk
+                            ? ColumnShapeGuard.Reason
+                            : $"{table.RowCount} 行 × {table.ColumnCount} 列の表の "
+                                + $"{cell.Row + 1} 行 {cell.Column + 1} 列目",
                 OriginalEngineResults = sources.Count == 0
                     ? [new OcrEngineReading(OcrFusion.MultiEngineName, string.Empty, 0)]
                     : [.. sources.SelectMany(EngineReadings)],
@@ -330,7 +479,14 @@ public sealed class PdfScanReader
     /// **指定した項目の数と、作る件数は必ず同じ。** 読み取りが見つからなくても
     /// 「見つからない」として 1 件残す(項目ごと消えるのを防ぐ)。
     /// </summary>
-    private static IReadOnlyList<OcrItem> BuildFormItems(
+    /// <summary>1 ページぶんの帳票の読み取り(状態はまだ決めない)。</summary>
+    private sealed record FormPageReading(
+        int Page,
+        DeskewTransform Transform,
+        IReadOnlyList<FormFieldReading> Readings,
+        IReadOnlyDictionary<string, MarkResult> Marks);
+
+    private static FormPageReading ReadFormPage(
         IOcrPageSource source,
         OcrPageRead read,
         FormTemplate template,
@@ -356,74 +512,106 @@ public sealed class PdfScanReader
         var offset = FormFieldExtractor.FindOffset(
             deskewedTemplate, read.Lines, line => Fuse(line).Text);
 
-        var readings = FormFieldExtractor.Read(deskewedTemplate, read.Lines, offset, Fuse);
-        var marks = ReadMarks(source, read, deskewedTemplate, offset, cancellationToken);
+        return new FormPageReading(
+            read.Page,
+            read.Transform,
+            FormFieldExtractor.Read(deskewedTemplate, read.Lines, offset, Fuse),
+            ReadMarks(source, read, deskewedTemplate, offset, cancellationToken));
+    }
 
-        var items = new List<OcrItem>(readings.Count);
-        var index = 0;
-
-        foreach (var reading in readings)
+    private static IReadOnlyList<OcrItem> BuildFormItems(
+        IReadOnlyList<FormPageReading> pages, FormTemplate template)
+    {
+        // 項目ごとに「その項目らしい形」を全ページの読みから学ぶ。
+        // 学んだ形は**自動確定してよいかの判断にだけ**使い、値は書き換えない。
+        var patterns = new Dictionary<string, string?>();
+        for (var field = 0; field < template.Fields.Count; field++)
         {
-            var field = template.Fields[index];
-            var place = read.Transform.ToOriginal(reading.Area);
+            var name = template.Fields[field].Name;
+            patterns[name] = FieldShapePattern.Learn(
+                pages.Where(page => field < page.Readings.Count)
+                    .Where(page => page.Readings[field].WasFound)
+                    .Select(page => page.Readings[field].Text));
+        }
 
-            if (field.Kind == FormFieldKind.Choice)
+        var items = new List<OcrItem>(pages.Count * template.Fields.Count);
+
+        foreach (var page in pages)
+        {
+            for (var index = 0; index < page.Readings.Count; index++)
             {
-                var mark = marks[field.Name];
+                var reading = page.Readings[index];
+                var field = template.Fields[index];
+                var place = page.Transform.ToOriginal(reading.Area);
+
+                if (field.Kind == FormFieldKind.Choice)
+                {
+                    var mark = page.Marks[field.Name];
+                    items.Add(new OcrItem
+                    {
+                        PageNumber = page.Page,
+                        LineNumber = index + 1,
+                        IndexInLine = 0,
+                        FieldName = field.Name,
+                        Text = mark.Text,
+                        BoundingBox = place,
+                        Confidence = mark.Confidence,
+                        Reason = mark.Reason,
+                        OriginalEngineResults =
+                            [new OcrEngineReading("印の判定", mark.Text, mark.Confidence)],
+                        InitialStatus = MarkClassifier.ToStatus(mark),
+                        Status = MarkClassifier.ToStatus(mark),
+                    });
+
+                    continue;
+                }
+
+                // 自信が足りていても、形が怪しければ自動確定しない。
+                // 2 つのモデルは同じ字形の取り違えを共有するので、一致は根拠にならない。
+                //
+                // 判断は 2 段構え。全ページから形を学べた項目は、その形どおりに
+                // 読めていれば自動確定してよい(取り違えやすい字を含んでいても、
+                // 同じ形で 120 ページ読めているならその読みは信用できる)。
+                // 形を学べなかった項目だけ、B2 の粗い決まりへ落とす。
+                var pattern = patterns.GetValueOrDefault(field.Name);
+                var byPattern = pattern is not null;
+                var shapeOk = (byPattern
+                        ? FieldShapePattern.Matches(pattern, reading.Text)
+                        : FieldAutoAcceptPolicy.CanAutoAccept(field.Kind, reading.Text))
+                    && !FieldAutoAcceptPolicy.IsUpsideDownAmbiguous(reading.Text);
+
+                var status = !reading.WasFound
+                    ? OcrItemStatus.Missing
+                    : reading.Confidence >= OcrFusion.AutoAcceptThreshold && shapeOk
+                        ? OcrItemStatus.AutoAccepted
+                        : OcrItemStatus.NeedsReview;
+
+                var reason = reading.WasFound
+                    && !shapeOk
+                    && reading.Confidence >= OcrFusion.AutoAcceptThreshold
+                    ? byPattern
+                        ? FieldShapePattern.Reason
+                        : FieldAutoAcceptPolicy.ReasonFor(field.Kind)
+                    : reading.Reason;
+
                 items.Add(new OcrItem
                 {
-                    PageNumber = read.Page,
+                    PageNumber = page.Page,
                     LineNumber = index + 1,
                     IndexInLine = 0,
                     FieldName = field.Name,
-                    Text = mark.Text,
+                    IsMissing = !reading.WasFound,
+                    Text = reading.Text,
                     BoundingBox = place,
-                    Confidence = mark.Confidence,
-                    Reason = mark.Reason,
+                    Confidence = reading.Confidence,
+                    Reason = reason,
                     OriginalEngineResults =
-                        [new OcrEngineReading("印の判定", mark.Text, mark.Confidence)],
-                    InitialStatus = MarkClassifier.ToStatus(mark),
-                    Status = MarkClassifier.ToStatus(mark),
+                        [new OcrEngineReading(
+                            OcrFusion.MultiEngineName, reading.Text, reading.Confidence)],
+                    InitialStatus = status,
+                    Status = status,
                 });
-
-                index++;
-                continue;
             }
-
-            // 自信が足りていても、項目の種類として形が怪しければ自動確定しない。
-            // 2 つのモデルは同じ字形の取り違えを共有するので、一致は根拠にならない。
-            var shapeOk = FieldAutoAcceptPolicy.CanAutoAccept(field.Kind, reading.Text);
-
-            var status = !reading.WasFound
-                ? OcrItemStatus.Missing
-                : reading.Confidence >= OcrFusion.AutoAcceptThreshold && shapeOk
-                    ? OcrItemStatus.AutoAccepted
-                    : OcrItemStatus.NeedsReview;
-
-            var reason = reading.WasFound
-                && !shapeOk
-                && reading.Confidence >= OcrFusion.AutoAcceptThreshold
-                ? FieldAutoAcceptPolicy.ReasonFor(field.Kind)
-                : reading.Reason;
-
-            items.Add(new OcrItem
-            {
-                PageNumber = read.Page,
-                LineNumber = index + 1,
-                IndexInLine = 0,
-                FieldName = field.Name,
-                IsMissing = !reading.WasFound,
-                Text = reading.Text,
-                BoundingBox = place,
-                Confidence = reading.Confidence,
-                Reason = reason,
-                OriginalEngineResults =
-                    [new OcrEngineReading(OcrFusion.MultiEngineName, reading.Text, reading.Confidence)],
-                InitialStatus = status,
-                Status = status,
-            });
-
-            index++;
         }
 
         return items;

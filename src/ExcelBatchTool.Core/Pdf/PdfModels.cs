@@ -84,6 +84,32 @@ public static class PdfReadDefaults
     /// <summary>このページ数を超える PDF は動作未確認として扱う。</summary>
     public const int MaxPages = 2000;
 
+    /// <summary>
+    /// OCR に回せるページ数の上限。
+    ///
+    /// 文字情報のある PDF と違い、OCR は 1 ページあたり実測 1.6〜3.8 秒かかる。
+    /// 2,000 ページを OCR に回すと 1〜2 時間になり、途中経過も分からないまま
+    /// 待たせることになる。無制限に走らせず、ここで区切って
+    /// 「何ページまでなら扱えるか」を先に伝える。
+    /// </summary>
+    public const int MaxOcrPages = 1000;
+
+    /// <summary>
+    /// これを超えるページ数の OCR は時間がかかることを先に知らせる(止めはしない)。
+    /// </summary>
+    public const int SlowOcrPageWarning = 200;
+
+    /// <summary>
+    /// 1 ページを 300dpi で描いたときの画素数の上限。
+    ///
+    /// A4 は約 870 万画素。A0 相当までは扱えるようにしつつ、
+    /// それ以上の巨大なページでメモリーを使い切らないように区切る。
+    /// </summary>
+    public const long MaxRenderedPixelsPerPage = 80_000_000;
+
+    /// <summary>OCR の 1 ページあたりの実測時間(見込みを伝えるためだけに使う)。</summary>
+    public const double OcrSecondsPerPage = 2.0;
+
     /// <summary>1 ページの文字数がこれ未満なら「文字情報のあるページ」とみなさない。</summary>
     public const int MinLettersPerTextPage = 10;
 

@@ -82,7 +82,7 @@ public sealed class OcrTableAndFormTests
         var item = Assert.Single(reading.Items);
 
         // 読み取りは直した画像で行うが、確認に使う位置は元のページのもの。
-        var expected = new DeskewTransform(2.0, 620, 877).ToOriginal(new OcrBox(300, 500, 240, 40));
+        var expected = new DeskewTransform(-2.0, 620, 877).ToOriginal(new OcrBox(300, 500, 240, 40));
         Assert.Equal(expected.X, item.BoundingBox.X, 3);
         Assert.Equal(expected.Y, item.BoundingBox.Y, 3);
         Assert.NotEqual(300, item.BoundingBox.X);
@@ -189,11 +189,12 @@ public sealed class OcrTableAndFormTests
     }
 
     [Fact]
-    public void ATiltedTableIsBlockedInsteadOfBeingOutputBroken()
+    public void ATiltedTableIsDeskewedAndThenReadAsATable()
     {
-        // まっすぐな罫線表はセル一致 61.3% だが、2 度傾いた表は 4.8% まで落ちる
-        // (罫線の位置がわずかな残り傾きでずれ、行と列が崩れる)。
-        // 崩れた表をそれらしく出すより、理由を示して止める。
+        // Phase 2F-B2 では傾いた表を一律で止めていた。当時はまっすぐな表でも
+        // セル一致 61.3% しか無く、傾けると 4.8% まで落ちたため。
+        // Paddle Inference 3.3.1 でまっすぐが 94.3% になったので測り直し、
+        // 「傾きを直してから行と列へ戻す」ところまで通すようにした。
         using var dir = new TempDir();
         var pdf = dir.File("傾いた表.pdf");
         TestPdfFactory.CreateImageOnly(pdf, pages: 1);
@@ -209,34 +210,40 @@ public sealed class OcrTableAndFormTests
 
         var reading = new PdfScanReader().Read(engine, pdf, [1]);
 
-        Assert.Contains(reading.Issues, issue =>
-            issue.Message.Contains("傾いた表", StringComparison.Ordinal)
-            && issue.Message.Contains("次の段階", StringComparison.Ordinal));
-        Assert.Empty(reading.Items);
+        // 傾きを直してから読んでいる。
+        Assert.Contains(2.0, engine.DeskewAngles);
+        Assert.Equal([1], reading.NeedsDeskewPages);
+
+        // 止めずに、行と列のある表として出している。
+        Assert.DoesNotContain(reading.Issues, issue => issue.Severity == Merge.MergeIssueSeverity.Block);
+        Assert.NotEmpty(reading.Items);
+        Assert.All(reading.Items, item => Assert.NotNull(item.Row));
     }
 
     [Fact]
-    public void ATableWhoseTiltCannotBeMeasuredIsAlsoBlocked()
+    public void ATableThatCannotBeRebuiltIsBlockedInsteadOfBeingOutputBroken()
     {
-        // 表には文字が十分にあるので、本来は傾きを測れる。測れないのは行が斜めに走って
-        // 塊が繋がるとき、つまり傾いているとき(実測: 2 度傾いた表は測れず、罫線も 0 本)。
+        // 傾きを直しきれないと、区画が噛み合わず「行と列はあるのに中身が空」に
+        // なる。この形のまま出すと、表として正しそうに見えて中身が抜け落ちる。
+        // 中身のあるセルが半分に満たなければ、表として扱わず理由を示して止める。
         using var dir = new TempDir();
-        var pdf = dir.File("測れない表.pdf");
+        var pdf = dir.File("戻せない表.pdf");
         TestPdfFactory.CreateImageOnly(pdf, pages: 1);
 
+        // 5 行 4 列の区画に対して、文字は 1 か所だけ。
         var engine = new FakeOcrEngine()
-            .Page(1,
-                FakeOcrEngine.At("商品コード", 0.99, new OcrBox(60, 110, 90, 20)),
-                FakeOcrEngine.At("商品名", 0.99, new OcrBox(210, 110, 90, 20)),
-                FakeOcrEngine.At("A0001", 0.99, new OcrBox(60, 150, 90, 20)),
-                FakeOcrEngine.At("架空の商品", 0.99, new OcrBox(210, 150, 90, 20)))
-            .Probe(1, skew: 0, horizontal: 3, vertical: 3, reliable: false);
+            .Page(1, FakeOcrEngine.At("A0001", 0.99, new OcrBox(60, 110, 60, 20)))
+            .Probe(1, skew: 0, horizontal: 6, vertical: 5)
+            .Rulings(1,
+                rows: [100, 140, 180, 220, 260, 300],
+                columns: [50, 150, 250, 350, 450]);
 
         var reading = new PdfScanReader().Read(
             engine, pdf, [1], new OcrReadOptions { Mode = OcrReadMode.Table });
 
         Assert.Contains(reading.Issues, issue =>
-            issue.Message.Contains("傾いた表", StringComparison.Ordinal));
+            issue.Severity == Merge.MergeIssueSeverity.Block
+            && issue.Message.Contains("戻せない", StringComparison.Ordinal));
         Assert.Empty(reading.Items);
     }
 

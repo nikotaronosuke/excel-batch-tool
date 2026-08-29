@@ -354,6 +354,7 @@ public sealed class RecipeStore
             ? recipe.SourceTableToTargetTable
             : null,
         CsvTransform = recipe.Type == RecipeType.CsvTransform ? recipe.CsvTransform : null,
+        PdfRead = recipe.Type == RecipeType.PdfRead ? recipe.PdfRead : null,
     };
 
     private static RecipeSaveResult Failed(string error, IReadOnlyList<SavedRecipe>? recipes = null)

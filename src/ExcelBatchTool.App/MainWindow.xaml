@@ -2214,7 +2214,10 @@
         </TabItem>
 
         <TabItem Header="8. PDF を読み取る">
-            <Grid Margin="0,12,0,0" DataContext="{Binding PdfRead}">
+          <DockPanel Margin="0,12,0,0" DataContext="{Binding PdfRead}">
+            <ContentControl DockPanel.Dock="Top" Content="{Binding Recipes}"
+                            ContentTemplate="{StaticResource RecipeAreaTemplate}" />
+            <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="8*" MinWidth="380" />
                     <ColumnDefinition Width="12" />
@@ -2646,6 +2649,7 @@
                     </DockPanel>
                 </Border>
             </Grid>
+          </DockPanel>
         </TabItem>
 
         </TabControl>

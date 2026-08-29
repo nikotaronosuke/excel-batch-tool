@@ -65,8 +65,46 @@ internal static class RecipeValidation
                 => ValidatePayload(recipe.Name, recipe.SourceToFixedCells, ValidateSourceToFixedCells),
             RecipeType.SourceTableToTargetTable => ValidatePayload(
                 recipe.Name, recipe.SourceTableToTargetTable, ValidateSourceTableToTargetTable),
+            RecipeType.PdfRead => ValidatePayload(recipe.Name, recipe.PdfRead, ValidatePdfRead),
             _ => ValidatePayload(recipe.Name, recipe.CsvTransform, ValidateCsvTransform),
         };
+    }
+
+    /// <summary>
+    /// PDF 読み取りの設定を確かめる。
+    /// 元の PDF に関わるもの(ファイル名・保存場所・読み取った文字)は
+    /// そもそも持たせていないので、ここで見るのは「読み方」の筋が通っているかだけ。
+    /// </summary>
+    private static string? ValidatePdfRead(PdfReadRecipe recipe)
+    {
+        if (string.IsNullOrWhiteSpace(recipe.ReadMode))
+        {
+            return "読み取り方が決まっていません。";
+        }
+
+        if (recipe.Fields.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var field in recipe.Fields)
+        {
+            if (string.IsNullOrWhiteSpace(field.Name))
+            {
+                return "名前のない項目があります。";
+            }
+
+            if (field.Width <= 0 || field.Height <= 0)
+            {
+                return $"「{field.Name}」の読み取る場所が決まっていません。";
+            }
+        }
+
+        var duplicate = recipe.Fields
+            .GroupBy(field => field.Name, StringComparer.Ordinal)
+            .FirstOrDefault(group => group.Count() > 1);
+
+        return duplicate is null ? null : $"「{duplicate.Key}」が重複しています。";
     }
 
     private static string? ValidatePayload<T>(string name, T? payload, Func<T, string?> validate)

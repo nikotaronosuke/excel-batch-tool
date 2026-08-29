@@ -28,6 +28,7 @@ public static class RecipeConfiguration
             RecipeType.SourceToFixedCells => AreSame(left.SourceToFixedCells, right.SourceToFixedCells),
             RecipeType.SourceTableToTargetTable
                 => AreSame(left.SourceTableToTargetTable, right.SourceTableToTargetTable),
+            RecipeType.PdfRead => AreSame(left.PdfRead, right.PdfRead),
             _ => AreSame(left.CsvTransform, right.CsvTransform),
         };
     }
@@ -74,6 +75,30 @@ public static class RecipeConfiguration
                 (a, b) => Same(a.SourceColumn, b.SourceColumn)
                     && Same(a.TargetColumn, b.TargetColumn)
                     && a.Kind == b.Kind);
+
+    private static bool AreSame(PdfReadRecipe? left, PdfReadRecipe? right)
+    {
+        if (left is null || right is null)
+        {
+            return left is null && right is null;
+        }
+
+        return left.ReadMode == right.ReadMode
+            && left.OutputFormat == right.OutputFormat
+            && left.OutputSuffix == right.OutputSuffix
+            && left.Encoding == right.Encoding
+            && left.QuoteMode == right.QuoteMode
+            && left.Fields.Count == right.Fields.Count
+            && left.Fields.Zip(right.Fields).All(pair =>
+                pair.First.Name == pair.Second.Name
+                && pair.First.Kind == pair.Second.Kind
+                && pair.First.IsRequired == pair.Second.IsRequired
+                && pair.First.X == pair.Second.X
+                && pair.First.Y == pair.Second.Y
+                && pair.First.Width == pair.Second.Width
+                && pair.First.Height == pair.Second.Height
+                && pair.First.Choices.Count == pair.Second.Choices.Count);
+    }
 
     private static bool AreSame(CsvTransformRecipe? left, CsvTransformRecipe? right)
         => left is not null

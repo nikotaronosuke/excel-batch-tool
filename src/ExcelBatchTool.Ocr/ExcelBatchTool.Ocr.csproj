@@ -10,8 +10,10 @@
 
     という 2 つを同時に満たす。
 
-    Paddle Inference は 2.x に固定する。日本語専用 rec(japan_PP-OCRv4)は旧形式で、
-    3.x runtime では device を問わず実行できないことを実測している。
+    Paddle Inference は 3.3.1。Phase 2F-B1 では「日本語専用 rec(japan_PP-OCRv4)は
+    旧形式なので 3.x では動かない」と実測して 2.x に留めていたが、**3.3.1 で再実測すると
+    PP-OCRv5 と japan_PP-OCRv4 が同じプロセスで両方読み込めた**(2F-B3)。
+    別プロセス構成が要らなくなったので、そのまま 1 プロセスの二重読みを続ける。
     行列演算は OpenBLAS(BSD-3-Clause)。Intel MKL は再配布条件に曖昧さが残るため採らない。
   -->
   <PropertyGroup>
@@ -29,9 +31,9 @@
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" />
     <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" />
     <PackageReference Include="PDFtoImage" Version="5.4.0" />
-    <PackageReference Include="Sdcb.PaddleInference" Version="2.5.0.1" />
-    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.openblas" Version="2.6.1" />
-    <PackageReference Include="Sdcb.PaddleOCR" Version="2.7.0.3" />
+    <PackageReference Include="Sdcb.PaddleInference" Version="3.3.1" />
+    <PackageReference Include="Sdcb.PaddleInference.runtime.win64.openblas" Version="3.3.1.70" />
+    <PackageReference Include="Sdcb.PaddleOCR" Version="3.3.1" />
   </ItemGroup>
 
   <ItemGroup>

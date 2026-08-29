@@ -3,6 +3,7 @@ using System.IO;
 using ExcelBatchTool.Core.CsvTransform;
 using ExcelBatchTool.Core.Merge;
 using ExcelBatchTool.Core.Ocr;
+using ExcelBatchTool.Core.Recipes;
 using ExcelBatchTool.Core.Pdf;
 
 namespace ExcelBatchTool.App.ViewModels;
@@ -11,7 +12,7 @@ namespace ExcelBatchTool.App.ViewModels;
 public sealed record PdfPreviewRow(string First, string Second, string Text);
 
 /// <summary>「8. PDF を読み取る」(Phase 2F-A / 2F-B1)の ViewModel。</summary>
-public sealed class PdfReadViewModel : ObservableObject
+public sealed class PdfReadViewModel : ObservableObject, IRecipeHost
 {
     private const string FormatXlsx = "Excel (.xlsx)";
     private const string FormatCsv = "CSV (.csv)";
@@ -74,9 +75,13 @@ public sealed class PdfReadViewModel : ObservableObject
     internal PdfReadViewModel(
         Func<string?> pickPdfFile,
         Func<OcrPackStatus>? inspectPack = null,
-        Func<OcrPackStatus, IOcrEngine>? loadEngine = null)
+        Func<OcrPackStatus, IOcrEngine>? loadEngine = null,
+        RecipeStore? recipeStore = null,
+        Func<string, bool>? confirm = null)
     {
         _pickPdfFile = pickPdfFile;
+        Recipes = new RecipeAreaViewModel(
+            this, recipeStore ?? new RecipeStore(), confirm ?? RecipeSaveGuard.AskInDialog);
         _inspectPack = inspectPack ?? (() => OcrPack.Inspect());
         _loadEngine = loadEngine ?? OcrPack.Load;
 
@@ -1202,6 +1207,106 @@ public sealed class PdfReadViewModel : ObservableObject
         OnPropertyChanged(nameof(SecondColumnHeader));
         OnPropertyChanged(nameof(TextColumnHeader));
         RaiseCommandStates();
+    }
+
+    // ── 処理設定(レシピ) ─────────────────────────────
+    //
+    // 保存するのは「どう読むか」だけ。**元の PDF に関わるものは何も保存しない**
+    // (ファイル名・保存場所・読み取った文字・ページの中身・個人情報の実値)。
+    // 毎月同じ様式の帳票が届くとき、項目を作り直さずに済むようにするためのもの。
+
+    public RecipeAreaViewModel Recipes { get; }
+
+    RecipeType IRecipeHost.RecipeType => RecipeType.PdfRead;
+
+    string? IRecipeHost.RecipeSaveBlockedReason
+        => IsFixedForm && TemplateFields.Count == 0
+            ? "読み取る項目がまだありません。1 度読み取って項目を作ってから保存してください。"
+            : null;
+
+    SavedRecipe IRecipeHost.CreateRecipe(string name) => new()
+    {
+        Name = name,
+        Type = RecipeType.PdfRead,
+        PdfRead = new PdfReadRecipe
+        {
+            ReadMode = ReadModeDisplay,
+            OutputFormat = FormatDisplay,
+            OutputSuffix = OutputSuffix,
+            Encoding = EncodingDisplay switch
+            {
+                EncodingUtf8 => CsvOutputEncoding.Utf8,
+                EncodingShiftJis => CsvOutputEncoding.ShiftJis,
+                _ => CsvOutputEncoding.Utf8Bom,
+            },
+            QuoteMode = string.Equals(QuoteDisplay, QuoteAll, StringComparison.Ordinal)
+                ? CsvQuoteMode.All
+                : CsvQuoteMode.Minimal,
+            Fields = [.. TemplateFields.Select(field => new PdfReadRecipeField
+            {
+                Name = field.Name,
+                Kind = field.Kind,
+                IsRequired = field.IsRequired,
+                X = field.Area.X,
+                Y = field.Area.Y,
+                Width = field.Area.Width,
+                Height = field.Area.Height,
+            })],
+        },
+    };
+
+    /// <summary>
+    /// 設定を画面へ戻す。読み取りはやり直させる(前回の読み取り結果は引き継がない)。
+    /// </summary>
+    IReadOnlyList<string> IRecipeHost.ApplyRecipe(SavedRecipe recipe)
+    {
+        var payload = recipe.PdfRead!;
+        var notes = new List<string>();
+
+        if (ReadModeOptions.Contains(payload.ReadMode))
+        {
+            ReadModeDisplay = payload.ReadMode;
+        }
+        else
+        {
+            notes.Add($"「{payload.ReadMode}」という読み取り方は今のバージョンにありません。");
+        }
+
+        FormatDisplay = payload.OutputFormat;
+        OutputSuffix = payload.OutputSuffix;
+        EncodingDisplay = payload.Encoding switch
+        {
+            CsvOutputEncoding.Utf8 => EncodingUtf8,
+            CsvOutputEncoding.ShiftJis => EncodingShiftJis,
+            _ => EncodingUtf8Bom,
+        };
+        QuoteDisplay = payload.QuoteMode == CsvQuoteMode.All ? QuoteAll : QuoteMinimal;
+
+        TemplateFields.Clear();
+        foreach (var field in payload.Fields)
+        {
+            TemplateFields.Add(
+                new FormFieldRow(
+                    field.Name, new OcrBox(field.X, field.Y, field.Width, field.Height))
+                {
+                    Kind = FormFieldRow.KindOptions.Contains(field.Kind)
+                        ? field.Kind
+                        : FormFieldRow.KindOptions[0],
+                    IsRequired = field.IsRequired,
+                });
+        }
+
+        if (payload.Fields.Count > 0)
+        {
+            notes.Add(
+                $"{payload.Fields.Count:N0} 項目を読み込みました。"
+                    + "読み取る場所は前の PDF に合わせたものなので、"
+                    + "今回の PDF で 1 度読み取って位置を確かめてください。");
+        }
+
+        OnPropertyChanged(nameof(TemplateSummaryText));
+        RaiseCommandStates();
+        return notes;
     }
 
     private void RaiseCommandStates()
