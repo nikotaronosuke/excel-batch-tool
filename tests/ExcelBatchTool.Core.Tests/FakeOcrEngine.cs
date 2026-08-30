@@ -15,6 +15,12 @@ internal sealed class FakeOcrEngine : IOcrEngine
     private readonly Dictionary<int, (List<double> Rows, List<double> Columns)> _rulings = [];
     private readonly Dictionary<int, List<double>> _ink = [];
 
+    /// <summary>この fake が使うページの中心 (A4 相当)。傾きの計算はここを軸にする。</summary>
+    public const double PageCenterX = 620;
+
+    /// <inheritdoc cref="PageCenterX"/>
+    public const double PageCenterY = 877;
+
     public OcrEngineInfo Info { get; init; }
         = new("テスト多言語", "テスト日本語", "テスト", "テスト", 300);
 
@@ -113,9 +119,9 @@ internal sealed class FakeOcrEngine : IOcrEngine
             engine.DeskewAngles.Add(deskewDegrees);
 
             var lines = engine._pages.TryGetValue(pageNumber, out var found) ? found : [];
-            var transform = deskewDegrees == 0
-                ? DeskewTransform.None
-                : new DeskewTransform(-deskewDegrees, 620, 877);
+            // 製品と同じ作り方をする。ここで符号を独自に決めると、
+            // 座標の向きを取り違えたときに fake 側も一緒に間違えて気付けない。
+            var transform = DeskewTransform.FromRotation(deskewDegrees, PageCenterX, PageCenterY);
 
             var read = new OcrPageRead(pageNumber, lines, transform);
             return engine._rulings.TryGetValue(pageNumber, out var rulings)

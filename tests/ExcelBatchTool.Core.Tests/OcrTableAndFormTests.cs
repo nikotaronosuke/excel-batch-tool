@@ -82,7 +82,10 @@ public sealed class OcrTableAndFormTests
         var item = Assert.Single(reading.Items);
 
         // 読み取りは直した画像で行うが、確認に使う位置は元のページのもの。
-        var expected = new DeskewTransform(-2.0, 620, 877).ToOriginal(new OcrBox(300, 500, 240, 40));
+        // 戻す向きが正しいかどうかは DeskewReviewCoordinateTests が画素の実測で見ている。
+        // ここでは「元へ戻す変換を通っている」ことだけを見る。
+        var expected = DeskewTransform.FromRotation(2.0, 620, 877)
+            .ToOriginal(new OcrBox(300, 500, 240, 40));
         Assert.Equal(expected.X, item.BoundingBox.X, 3);
         Assert.Equal(expected.Y, item.BoundingBox.Y, 3);
         Assert.NotEqual(300, item.BoundingBox.X);
