@@ -7,6 +7,8 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 
 **現在は初期開発段階です。** 完成品・安定版ではありません。
 
+開発の経緯・OCRの実測値・市場調査については、[ぽいもの本舗の記事](https://poimono.jp/articles/excel-batch-tool-pdf-ocr/)にまとめています。
+
 ## 現在できること
 
 **入力した Excel ファイルは、解析でも統合でも一括変更でも転記・突合でも一切変更しません。**
