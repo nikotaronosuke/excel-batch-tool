@@ -13,9 +13,30 @@ public sealed record DeskewTransform(double AngleDegrees, double CenterX, double
     /// <summary>傾きを直していない(座標はそのまま)。</summary>
     public static readonly DeskewTransform None = new(0, 0, 0);
 
+    /// <summary>
+    /// ページを <paramref name="degrees"/> 度回してまっすぐにしたときの対応を作る。
+    ///
+    /// **ここで角度の向きを変えてはいけない。** 画像を回す側は OpenCV の
+    /// getRotationMatrix2D(中心, degrees, 1) を使っていて、元の点 (x, y) の中身は
+    ///
+    ///   x' = cx + dx*cos(degrees) + dy*sin(degrees)
+    ///   y' = cy - dx*sin(degrees) + dy*cos(degrees)   (dx = x - cx, dy = y - cy)
+    ///
+    /// へ移る。これは <see cref="Map"/> に -degrees を渡したものと同じなので、
+    /// <see cref="ToDeskewed"/> が -AngleDegrees を使う今の作りに合わせるには、
+    /// AngleDegrees は**回した角度そのまま**でなければならない。
+    ///
+    /// 実際、ここを -degrees にしていたために <see cref="ToOriginal"/> と
+    /// <see cref="ToDeskewed"/> の働きが入れ替わり、戻すどころか傾き 2 つぶん回って
+    /// いた。1240 × 1754 のページを 2 度回した実測では、(330, 520) にある文字に対して
+    /// 枠が (305.6, 540.8) に出ていた(約 32 画素。中心から遠い行ほど大きくなる)。
+    /// </summary>
+    public static DeskewTransform FromRotation(double degrees, double centerX, double centerY)
+        => degrees == 0 ? None : new DeskewTransform(degrees, centerX, centerY);
+
     public bool IsIdentity => AngleDegrees == 0;
 
-    /// <summary>直した画像の座標 → 元のページの座標。</summary>
+    /// <summary>直した画像の座標 → 元のページの座標(確認画面はこちらを使う)。</summary>
     public OcrBox ToOriginal(OcrBox box) => Map(box, AngleDegrees);
 
     /// <summary>元のページの座標 → 直した画像の座標。</summary>

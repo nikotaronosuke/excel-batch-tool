@@ -169,7 +169,10 @@ internal static class PageImageOps
     {
         var centerX = source.Width / 2.0;
         var centerY = source.Height / 2.0;
-        transform = new DeskewTransform(-degrees, centerX, centerY);
+
+        // 向きは DeskewTransform.FromRotation が決める。ここで符号を触らない
+        // (触ったせいで確認画面の枠が文字からずれていた)。
+        transform = DeskewTransform.FromRotation(degrees, centerX, centerY);
 
         using var matrix = Cv2.GetRotationMatrix2D(
             new Point2f((float)centerX, (float)centerY), degrees, 1);
