@@ -9,6 +9,8 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 
 開発の経緯・OCRの実測値・市場調査については、[ぽいもの本舗の記事](https://poimono.jp/articles/excel-batch-tool-pdf-ocr/)にまとめています。
 
+仕様・ロードマップ・設計判断・調査結果・実装記録は [docs/](docs/README.md) にあります。
+
 ## 現在できること
 
 **入力した Excel ファイルは、解析でも統合でも一括変更でも転記・突合でも一切変更しません。**
@@ -469,6 +471,8 @@ src/ExcelBatchTool.App    … WPF デスクトップアプリ
 src/ExcelBatchTool.Ocr    … Offline OCR Pack の中身(本体からは参照しない)
 tools/OcrPackBuilder      … Offline OCR Pack を組み立てる配布用ツール
 tests/                    … テスト(架空データで生成した Workbook を使用)
+docs/                     … 仕様・ロードマップ・設計判断・調査・実装記録
+research/PdfFeasibility   … PDF 対応を測るための検証専用コード(製品からは参照しない)
 ```
 
 本体は `ExcelBatchTool.Ocr` を参照しません。OCR の実体は Pack のフォルダーから
