@@ -11,6 +11,9 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 
 仕様・ロードマップ・設計判断・調査結果・実装記録は [docs/](docs/README.md) にあります。
 
+> **なぜこの設計にしたか:** [Owner Decision Log](docs/OWNER_DECISIONS.md)  
+> 元ファイルを直接変更しない理由、実案件で実装順を変えた判断、OCRの誤確定を人へ回す基準、新しいOCRモデルを実測で採らなかった理由などをまとめています。
+
 ## 現在できること
 
 **入力した Excel ファイルは、解析でも統合でも一括変更でも転記・突合でも一切変更しません。**
