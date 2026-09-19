@@ -14,6 +14,12 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 > **なぜこの設計にしたか:** [Owner Decision Log](docs/OWNER_DECISIONS.md)  
 > 元ファイルを直接変更しない理由、実案件で実装順を変えた判断、OCRの誤確定を人へ回す基準、新しいOCRモデルを実測で採らなかった理由などをまとめています。
 
+<p align="center">
+  <img src="https://poimono.jp/images/articles/excel-batch-tool-pdf-ocr/app-overview.webp" width="900" alt="Excel Batch Tool の実画面。Excelファイル一覧、安全性チェック、8つの処理タブを表示" />
+</p>
+
+<p align="center"><em>実画面 — Workbookの安全解析からPDF / OCRまでを同じデスクトップUIで扱います。</em></p>
+
 ## 現在できること
 
 **入力した Excel ファイルは、解析でも統合でも一括変更でも転記・突合でも一切変更しません。**
