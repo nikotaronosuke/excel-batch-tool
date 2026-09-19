@@ -1,5 +1,7 @@
 # Owner Decision Log
 
+日本語 | [English](OWNER_DECISIONS.en.md)
+
 Excel Batch Tool は、「Excel の機能をできるだけ多く自動化する」ことを目的にしていません。
 
 実案件を調べながら、**大量・反復作業を減らしつつ、分からないものを勝手に補完せず、元ファイルを壊さないこと**を優先してきました。
