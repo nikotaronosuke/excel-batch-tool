@@ -9,7 +9,7 @@ A Windows desktop app for **safe, fully local batch processing of Excel workbook
 The project is still in early development. It is not presented as a finished stable product.
 
 <p align="center">
-  <img src="https://poimono.jp/images/articles/excel-batch-tool-pdf-ocr/app-overview.webp" width="900" alt="Excel Batch Tool showing workbook analysis, safety checks, and eight processing tabs" />
+  <img src="docs/images/app-overview.webp" width="900" alt="Excel Batch Tool showing workbook analysis, safety checks, and eight processing tabs" />
 </p>
 
 <p align="center"><em>Real application screen — workbook safety analysis, batch processing, CSV conversion, and PDF/OCR live in one desktop UI.</em></p>

@@ -14,7 +14,7 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 仕様・ロードマップ・設計判断・調査結果・実装記録は [docs/](docs/README.md) にあります。
 
 <p align="center">
-  <img src="https://poimono.jp/images/articles/excel-batch-tool-pdf-ocr/app-overview.webp" width="900" alt="Excel Batch Tool の実画面。Excelファイル一覧、安全性チェック、8つの処理タブを表示" />
+  <img src="docs/images/app-overview.webp" width="900" alt="Excel Batch Tool の実画面。Excelファイル一覧、安全性チェック、8つの処理タブを表示" />
 </p>
 
 <p align="center"><em>実画面 — Workbookの安全解析からPDF / OCRまでを同じデスクトップUIで扱います。</em></p>
