@@ -1294,7 +1294,7 @@ public sealed class CellMutationTests
 
         // 1 ファイル目を作り終えた時点で中止する。
         using var cancellation = new CancellationTokenSource();
-        var progress = new Progress<CellMutationProgress>(_ => cancellation.Cancel());
+        var progress = new SynchronousProgress<CellMutationProgress>(_ => cancellation.Cancel());
 
         var result = new CellMutator().Execute(preview, progress, cancellation.Token);
 
@@ -1760,5 +1760,14 @@ public sealed class CellMutationTests
     {
         var info = new FileInfo(path);
         return (Sha256(path), info.Length, info.LastWriteTimeUtc);
+    }
+
+    /// <summary>
+    /// Progress&lt;T&gt; は SynchronizationContext が無い環境では通知を非同期 dispatch するため、
+    /// キャンセルのタイミングを検証するテストでは同期 IProgress を使う。
+    /// </summary>
+    private sealed class SynchronousProgress<T>(Action<T> callback) : IProgress<T>
+    {
+        public void Report(T value) => callback(value);
     }
 }
