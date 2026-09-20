@@ -14,9 +14,6 @@ The project is still in early development. It is not presented as a finished sta
 
 <p align="center"><em>Real application screen — workbook safety analysis, batch processing, CSV conversion, and PDF/OCR live in one desktop UI.</em></p>
 
-> **Why is it designed this way?** Read the [Owner Decision Log](docs/OWNER_DECISIONS.en.md).  
-> It explains why source files are never edited in place, why unsafe cases block the entire operation, why feature priority followed real job patterns, and why OCR review gates false auto-accepts.
-
 ## Core idea
 
 The main value is not "support every Excel feature."
@@ -315,16 +312,13 @@ Unsupported cases should be detected and surfaced rather than silently damaged.
 The full Japanese documentation contains the detailed feature-level specification and benchmark history:
 
 - [Japanese README](README.md)
-- [Owner Decision Log](docs/OWNER_DECISIONS.en.md)
-- [Original Japanese Owner Decision Log](docs/OWNER_DECISIONS.md)
+- [Decision history](docs/decisions.md) *(Japanese, append-only; migrated into this repository on 2026-09-19 — see D-038)*
 - [Documentation index](docs/README.md) *(Japanese)*
 - [PDF feasibility benchmark](docs/research/pdf-feasibility-research.md) *(Japanese)*
 
 ## AI-assisted development
 
 The project was developed with AI-assisted coding and research.
-
-Product scope, safety policy, benchmark acceptance criteria, trade-offs, and final decisions are owned by the project owner.
 
 ## License
 

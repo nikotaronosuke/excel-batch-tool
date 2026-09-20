@@ -13,9 +13,6 @@ Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことな
 
 仕様・ロードマップ・設計判断・調査結果・実装記録は [docs/](docs/README.md) にあります。
 
-> **なぜこの設計にしたか:** [Owner Decision Log](docs/OWNER_DECISIONS.md)  
-> 元ファイルを直接変更しない理由、実案件で実装順を変えた判断、OCRの誤確定を人へ回す基準、新しいOCRモデルを実測で採らなかった理由などをまとめています。
-
 <p align="center">
   <img src="https://poimono.jp/images/articles/excel-batch-tool-pdf-ocr/app-overview.webp" width="900" alt="Excel Batch Tool の実画面。Excelファイル一覧、安全性チェック、8つの処理タブを表示" />
 </p>
@@ -494,6 +491,12 @@ research/PdfFeasibility   … PDF 対応を測るための検証専用コード(
 最終更新日時を比較し、**入力ファイルを一切変更しないこと**を自動検証しています。
 出力側も、生成したファイルを開き直して見出しと行数を検証してから確定するため、
 途中で失敗しても壊れた `.xlsx` が残りません。
+
+## 設計判断の記録
+
+設計判断の時系列記録は [docs/decisions.md](docs/decisions.md) にあります。もともと別の非公開 spec リポジトリで追記管理していた文書を、2026-09-19 に本リポジトリへ統合しました（D-038）。現在は本リポジトリが正本です。
+
+過去の Decision は書き換えず、変更があった場合は新しい番号で追記する append-only 形式です。
 
 ## License
 
