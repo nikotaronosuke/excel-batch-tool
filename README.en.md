@@ -2,6 +2,8 @@
 
 English | [日本語](README.md)
 
+[![CI](https://github.com/nikotaronosuke/excel-batch-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/nikotaronosuke/excel-batch-tool/actions/workflows/ci.yml)
+
 > **Excel Batch Tool is a development codename. The final product name has not been decided.**
 
 A Windows desktop app for **safe, fully local batch processing of Excel workbooks** without requiring Microsoft Excel itself.
