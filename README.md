@@ -2,6 +2,8 @@
 
 [English](README.en.md) | 日本語
 
+[![CI](https://github.com/nikotaronosuke/excel-batch-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/nikotaronosuke/excel-batch-tool/actions/workflows/ci.yml)
+
 > **Excel Batch Tool は開発コードネームです。正式な製品名は未定です。**
 
 Windows 上で、複数の Excel Workbook を Microsoft Excel を開くことなく、
